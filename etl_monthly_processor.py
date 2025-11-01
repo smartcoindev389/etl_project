@@ -1,0 +1,449 @@
+"""
+ETL Monthly Processor
+Processes CSV files monthly with historization support
+"""
+import pandas as pd
+import hashlib
+from pathlib import Path
+from datetime import datetime, date
+from sqlalchemy import create_engine, text
+import sys
+from typing import List, Dict, Optional
+
+from config import DatabaseConfig, ETLConfig
+
+class ETLMonthlyProcessor:
+    """Main ETL processor for monthly CSV files"""
+    
+    def __init__(self, use_cloud=False):
+        """
+        Initialize ETL processor
+        Args:
+            use_cloud: If True, use cloud database; if False, use local
+        """
+        self.use_cloud = use_cloud
+        self.engine = create_engine(DatabaseConfig.get_connection_string(use_cloud))
+        self.config = ETLConfig()
+        
+    def calculate_file_hash(self, file_path: Path) -> str:
+        """Calculate SHA256 hash of file"""
+        sha256_hash = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    
+    def is_file_processed(self, file_path: Path) -> Optional[Dict]:
+        """
+        Check if file has already been processed
+        Returns: Dict with file info if processed, None otherwise
+        """
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("SELECT * FROM processed_files WHERE file_path = :path"),
+                {"path": str(file_path)}
+            ).fetchone()
+            
+            if result:
+                return dict(result._mapping)
+        return None
+    
+    def register_file_processing(self, file_path: Path, file_hash: str, 
+                                 source_type: str, data_month: date,
+                                 file_size: int):
+        """Register or update file processing record"""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO processed_files 
+                    (file_path, file_name, file_hash, file_size_bytes, source_type, data_month)
+                    VALUES (:path, :name, :hash, :size, :type, :month)
+                    ON DUPLICATE KEY UPDATE
+                        last_processed_ts = CURRENT_TIMESTAMP,
+                        process_count = process_count + 1
+                """),
+                {
+                    "path": str(file_path),
+                    "name": file_path.name,
+                    "hash": file_hash,
+                    "size": file_size,
+                    "type": source_type,
+                    "month": data_month
+                }
+            )
+            conn.commit()
+    
+    def create_load_record(self, source_file: str, source_type: str, 
+                          file_path: str, data_month: date,
+                          file_size: int) -> int:
+        """Create audit load record and return load_id"""
+        with self.engine.connect() as conn:
+            result = conn.execute(
+                text("""
+                    INSERT INTO audit_loads 
+                    (source_file, source_type, file_path, file_size_bytes, 
+                     data_month, data_year, data_month_num, status)
+                    VALUES (:file, :type, :path, :size, :month, 
+                            YEAR(:month), MONTH(:month), 'RUNNING')
+                """),
+                {
+                    "file": source_file,
+                    "type": source_type,
+                    "path": file_path,
+                    "size": file_size,
+                    "month": data_month
+                }
+            )
+            conn.commit()
+            return result.lastrowid
+    
+    def update_load_record(self, load_id: int, status: str, 
+                          rows_read: int = 0, rows_valid: int = 0,
+                          rows_inserted: int = 0, rows_skipped: int = 0,
+                          error_message: str = None, error_details: str = None):
+        """Update audit load record with results"""
+        with self.engine.connect() as conn:
+            conn.execute(
+                text("""
+                    UPDATE audit_loads 
+                    SET status = :status,
+                        rows_read = :read,
+                        rows_valid = :valid,
+                        rows_inserted = :inserted,
+                        rows_skipped = :skipped,
+                        end_ts = CURRENT_TIMESTAMP,
+                        processing_duration_seconds = TIMESTAMPDIFF(SECOND, start_ts, CURRENT_TIMESTAMP),
+                        error_message = :error_msg,
+                        error_details = :error_details
+                    WHERE load_id = :load_id
+                """),
+                {
+                    "status": status,
+                    "read": rows_read,
+                    "valid": rows_valid,
+                    "inserted": rows_inserted,
+                    "skipped": rows_skipped,
+                    "error_msg": error_message,
+                    "error_details": error_details,
+                    "load_id": load_id
+                }
+            )
+            conn.commit()
+    
+    def extract_data_month_from_path(self, file_path: Path) -> Optional[date]:
+        """
+        Extract data month from file path
+        Expected patterns: YYYY-MM, YYYY_MM, or month names
+        """
+        path_str = str(file_path)
+        
+        # Try to find date patterns in path
+        import re
+        
+        # Pattern: YYYY-MM or YYYY_MM
+        date_pattern = r'(\d{4})[-_](\d{2})'
+        match = re.search(date_pattern, path_str)
+        
+        if match:
+            year, month = match.groups()
+            try:
+                return date(int(year), int(month), 1)
+            except ValueError:
+                pass
+        
+        # Pattern: month names (December 24, Agosto 25, etc.)
+        month_names = {
+            'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,
+            'mayo': 5, 'junio': 6, 'julio': 7, 'agosto': 8,
+            'septiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12
+        }
+        
+        for month_name, month_num in month_names.items():
+            if month_name.lower() in path_str.lower():
+                # Try to extract year (24, 25, etc. -> 2024, 2025)
+                year_pattern = rf'{month_name}[^\d]*(\d{{2}})'
+                year_match = re.search(year_pattern, path_str, re.IGNORECASE)
+                if year_match:
+                    year_short = int(year_match.group(1))
+                    year = 2000 + year_short if year_short < 50 else 1900 + year_short
+                    return date(year, month_num, 1)
+        
+        return None
+    
+    def identify_source_type(self, file_path: Path) -> str:
+        """Identify source type from filename"""
+        filename_lower = file_path.name.lower()
+        
+        if 'resultados_analisis_completo' in filename_lower or 'resultados' in filename_lower:
+            return 'resultados_analisis_completo'
+        elif 'metadata' in filename_lower:
+            return 'metadata'
+        elif 'speech_analytics' in filename_lower or 'speech' in filename_lower:
+            return 'speech_analytics'
+        else:
+            return 'unknown'
+    
+    def transform_data(self, df: pd.DataFrame, source_type: str) -> pd.DataFrame:
+        """
+        Transform data according to source type
+        Add common transformations here
+        """
+        # Make a copy to avoid modifying original
+        df_transformed = df.copy()
+        
+        # Add source type column
+        df_transformed['source_type'] = source_type
+        
+        # Basic data cleaning
+        # Remove leading/trailing whitespace from string columns
+        for col in df_transformed.select_dtypes(include=['object']).columns:
+            df_transformed[col] = df_transformed[col].astype(str).str.strip()
+        
+        # Replace 'nan' strings with actual NaN
+        df_transformed = df_transformed.replace('nan', pd.NA)
+        df_transformed = df_transformed.replace('None', pd.NA)
+        
+        return df_transformed
+    
+    def load_data_to_db(self, df: pd.DataFrame, load_id: int, 
+                        source_file: str, data_month: date):
+        """Load transformed data to database"""
+        if df.empty:
+            return 0
+        
+        # Add metadata columns
+        df['source_file'] = source_file
+        df['data_month'] = data_month
+        df['load_id'] = load_id
+        
+        # Map dataframe columns to database columns
+        # Note: This is a template - adjust column mapping based on actual CSV structure
+        # You'll need to update this based on the actual CSV schema from the Excel file
+        
+        try:
+            # Use to_sql with chunking for large datasets
+            rows_inserted = df.to_sql(
+                'fact_records',
+                self.engine,
+                if_exists='append',
+                index=False,
+                chunksize=self.config.BATCH_SIZE,
+                method='multi'
+            )
+            
+            return rows_inserted if isinstance(rows_inserted, int) else len(df)
+            
+        except Exception as e:
+            print(f"Error loading data: {str(e)}")
+            raise
+    
+    def process_single_file(self, file_path: Path, data_month: Optional[date] = None,
+                           skip_duplicates: bool = True) -> Dict:
+        """
+        Process a single CSV file
+        Returns: Dict with processing results
+        """
+        file_path = Path(file_path)
+        
+        if not file_path.exists():
+            return {
+                'success': False,
+                'error': f'File not found: {file_path}'
+            }
+        
+        # Check if already processed
+        if skip_duplicates:
+            processed = self.is_file_processed(file_path)
+            if processed:
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'message': f'File already processed: {file_path.name}'
+                }
+        
+        # Extract metadata
+        source_type = self.identify_source_type(file_path)
+        
+        if data_month is None:
+            data_month = self.extract_data_month_from_path(file_path)
+            if data_month is None:
+                data_month = date.today().replace(day=1)  # Default to current month
+        
+        file_size = file_path.stat().st_size
+        file_hash = self.calculate_file_hash(file_path)
+        
+        # Create load record
+        load_id = self.create_load_record(
+            source_file=file_path.name,
+            source_type=source_type,
+            file_path=str(file_path),
+            data_month=data_month,
+            file_size=file_size
+        )
+        
+        try:
+            # Extract
+            print(f"📖 Reading file: {file_path.name}")
+            df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
+            rows_read = len(df)
+            
+            # Transform
+            print(f"🔄 Transforming data...")
+            df_transformed = self.transform_data(df, source_type)
+            rows_valid = len(df_transformed)
+            
+            # Load
+            print(f"💾 Loading data to database...")
+            rows_inserted = self.load_data_to_db(
+                df_transformed, load_id, file_path.name, data_month
+            )
+            
+            # Register file
+            self.register_file_processing(
+                file_path, file_hash, source_type, data_month, file_size
+            )
+            
+            # Update load record
+            self.update_load_record(
+                load_id, 'COMPLETED',
+                rows_read=rows_read,
+                rows_valid=rows_valid,
+                rows_inserted=rows_inserted,
+                rows_skipped=rows_read - rows_valid
+            )
+            
+            print(f"✅ Successfully processed: {file_path.name} ({rows_inserted} rows)")
+            
+            return {
+                'success': True,
+                'load_id': load_id,
+                'rows_read': rows_read,
+                'rows_inserted': rows_inserted,
+                'data_month': data_month
+            }
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error processing {file_path.name}: {error_msg}")
+            
+            self.update_load_record(
+                load_id, 'FAILED',
+                rows_read=rows_read if 'rows_read' in locals() else 0,
+                error_message=error_msg[:500],  # Truncate if too long
+                error_details=str(e)
+            )
+            
+            return {
+                'success': False,
+                'load_id': load_id,
+                'error': error_msg
+            }
+    
+    def process_monthly_batch(self, data_month: date, base_path: Path = None) -> Dict:
+        """
+        Process all CSV files for a specific month
+        Args:
+            data_month: Date object representing the month (day=1)
+            base_path: Base path to search for CSV files
+        """
+        if base_path is None:
+            base_path = Path(self.config.CSV_BASE_PATH)
+        
+        base_path = Path(base_path)
+        
+        if not base_path.exists():
+            return {
+                'success': False,
+                'error': f'Base path not found: {base_path}'
+            }
+        
+        print(f"📅 Processing month: {data_month.strftime('%Y-%m')}")
+        
+        # Find all CSV files in the month's directory
+        month_str = data_month.strftime('%Y-%m')
+        month_dir = base_path / month_str
+        
+        if not month_dir.exists():
+            # Try alternative patterns
+            month_patterns = [
+                data_month.strftime('%Y_%m'),
+                data_month.strftime('%Y-%m'),
+                f"{data_month.strftime('%B')} {data_month.strftime('%y')}".lower()
+            ]
+            
+            for pattern in month_patterns:
+                potential_dir = base_path / pattern
+                if potential_dir.exists():
+                    month_dir = potential_dir
+                    break
+        
+        results = []
+        
+        if month_dir.exists() and month_dir.is_dir():
+            csv_files = list(month_dir.glob('*.csv'))
+            print(f"Found {len(csv_files)} CSV files")
+            
+            for csv_file in csv_files:
+                result = self.process_single_file(csv_file, data_month)
+                results.append(result)
+        else:
+            # Search in base path
+            csv_files = list(base_path.rglob('*.csv'))
+            print(f"Searching in base path, found {len(csv_files)} CSV files")
+            
+            for csv_file in csv_files:
+                # Check if file matches the month
+                file_month = self.extract_data_month_from_path(csv_file)
+                if file_month and file_month == data_month:
+                    result = self.process_single_file(csv_file, data_month)
+                    results.append(result)
+        
+        # Summary
+        successful = sum(1 for r in results if r.get('success'))
+        failed = len(results) - successful
+        
+        return {
+            'success': True,
+            'total_files': len(results),
+            'successful': successful,
+            'failed': failed,
+            'results': results
+        }
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='ETL Monthly Processor')
+    parser.add_argument('--file', type=str, help='Process single CSV file')
+    parser.add_argument('--month', type=str, help='Process month (YYYY-MM format)')
+    parser.add_argument('--path', type=str, help='Base path for CSV files')
+    parser.add_argument('--cloud', action='store_true', help='Use cloud database')
+    parser.add_argument('--skip-duplicates', action='store_true', default=True,
+                       help='Skip already processed files')
+    
+    args = parser.parse_args()
+    
+    processor = ETLMonthlyProcessor(use_cloud=args.cloud)
+    
+    if args.file:
+        # Process single file
+        result = processor.process_single_file(
+            Path(args.file),
+            skip_duplicates=args.skip_duplicates
+        )
+        print(f"\nResult: {result}")
+        
+    elif args.month:
+        # Process month
+        try:
+            data_month = datetime.strptime(args.month, '%Y-%m').date().replace(day=1)
+        except ValueError:
+            print("Invalid month format. Use YYYY-MM")
+            sys.exit(1)
+        
+        base_path = Path(args.path) if args.path else None
+        result = processor.process_monthly_batch(data_month, base_path)
+        print(f"\nBatch Result: {result}")
+    else:
+        print("Please specify --file or --month")
+
