@@ -211,27 +211,94 @@ class ETLMonthlyProcessor:
         if df.empty:
             return 0
         
-        # Add metadata columns
-        df['source_file'] = source_file
-        df['data_month'] = data_month
-        df['load_id'] = load_id
+        # Get list of columns that exist in the database
+        with self.engine.connect() as conn:
+            result = conn.execute(text("""
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = DATABASE() 
+                AND TABLE_NAME = 'fact_records'
+                AND COLUMN_NAME NOT IN ('record_id', 'data_year', 'data_month_num')
+            """))
+            db_columns = [row[0] for row in result]
         
-        # Map dataframe columns to database columns
-        # Note: This is a template - adjust column mapping based on actual CSV structure
-        # You'll need to update this based on the actual CSV schema from the Excel file
+        # Filter dataframe to only include columns that exist in database
+        # Keep metadata columns we'll add
+        metadata_cols = ['source_file', 'data_month', 'load_id']
+        available_cols = [col for col in df.columns if col in db_columns]
+        
+        if not available_cols:
+            print(f"Warning: No matching columns found between CSV and database")
+            print(f"CSV columns: {list(df.columns)[:10]}...")
+            print(f"DB columns: {db_columns[:10]}...")
+            return 0
+        
+        # Create filtered dataframe with only matching columns
+        df_filtered = df[available_cols].copy()
+        
+        # Add metadata columns
+        df_filtered['source_file'] = source_file
+        df_filtered['data_month'] = data_month
+        df_filtered['load_id'] = load_id
+        
+        print(f"  Filtered to {len(available_cols)} matching columns (from {len(df.columns)} CSV columns)")
         
         try:
             # Use to_sql with chunking for large datasets
-            rows_inserted = df.to_sql(
-                'fact_records',
-                self.engine,
-                if_exists='append',
-                index=False,
-                chunksize=self.config.BATCH_SIZE,
-                method='multi'
-            )
+            # Process in smaller chunks to avoid connection timeouts
+            chunk_size = min(self.config.BATCH_SIZE, 5000)  # Smaller chunks for large files
             
-            return rows_inserted if isinstance(rows_inserted, int) else len(df)
+            total_rows = 0
+            num_chunks = (len(df_filtered) + chunk_size - 1) // chunk_size
+            
+            for i in range(0, len(df_filtered), chunk_size):
+                chunk = df_filtered.iloc[i:i+chunk_size]
+                chunk_num = i // chunk_size + 1
+                
+                try:
+                    # Recreate connection for each chunk to avoid timeouts
+                    rows = chunk.to_sql(
+                        'fact_records',
+                        self.engine,
+                        if_exists='append',
+                        index=False,
+                        chunksize=min(len(chunk), 1000),
+                        method='multi'
+                    )
+                    total_rows += len(chunk) if not isinstance(rows, int) else rows
+                    print(f"  Loaded chunk {chunk_num}/{num_chunks}: {len(chunk)} rows")
+                except Exception as chunk_error:
+                    print(f"  Error in chunk {chunk_num}: {str(chunk_error)}")
+                    # Try to reconnect
+                    self.engine.dispose()
+                    self.engine = create_engine(
+                        DatabaseConfig.get_connection_string(self.use_cloud),
+                        pool_pre_ping=True,
+                        pool_recycle=3600,
+                        connect_args={
+                            'connect_timeout': 60,
+                            'read_timeout': 600,
+                            'write_timeout': 600
+                        }
+                    )
+                    # Retry once
+                    try:
+                        rows = chunk.to_sql(
+                            'fact_records',
+                            self.engine,
+                            if_exists='append',
+                            index=False,
+                            chunksize=min(len(chunk), 1000),
+                            method='multi'
+                        )
+                        total_rows += len(chunk) if not isinstance(rows, int) else rows
+                        print(f"  Retry successful: chunk {chunk_num} loaded")
+                    except Exception as retry_error:
+                        print(f"  Retry failed for chunk {chunk_num}: {str(retry_error)}")
+                        raise retry_error
+            
+            rows_inserted = total_rows
+            return rows_inserted
             
         except Exception as e:
             print(f"Error loading data: {str(e)}")
@@ -283,17 +350,17 @@ class ETLMonthlyProcessor:
         
         try:
             # Extract
-            print(f"📖 Reading file: {file_path.name}")
+            print(f"Reading file: {file_path.name}")
             df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
             rows_read = len(df)
             
             # Transform
-            print(f"🔄 Transforming data...")
+            print(f"Transforming data...")
             df_transformed = self.transform_data(df, source_type)
             rows_valid = len(df_transformed)
             
             # Load
-            print(f"💾 Loading data to database...")
+            print(f"Loading data to database...")
             rows_inserted = self.load_data_to_db(
                 df_transformed, load_id, file_path.name, data_month
             )
@@ -312,7 +379,7 @@ class ETLMonthlyProcessor:
                 rows_skipped=rows_read - rows_valid
             )
             
-            print(f"✅ Successfully processed: {file_path.name} ({rows_inserted} rows)")
+            print(f"Successfully processed: {file_path.name} ({rows_inserted} rows)")
             
             return {
                 'success': True,
@@ -324,7 +391,7 @@ class ETLMonthlyProcessor:
             
         except Exception as e:
             error_msg = str(e)
-            print(f"❌ Error processing {file_path.name}: {error_msg}")
+            print(f"Error processing {file_path.name}: {error_msg}")
             
             self.update_load_record(
                 load_id, 'FAILED',
@@ -357,7 +424,7 @@ class ETLMonthlyProcessor:
                 'error': f'Base path not found: {base_path}'
             }
         
-        print(f"📅 Processing month: {data_month.strftime('%Y-%m')}")
+        print(f"Processing month: {data_month.strftime('%Y-%m')}")
         
         # Find all CSV files in the month's directory
         month_str = data_month.strftime('%Y-%m')

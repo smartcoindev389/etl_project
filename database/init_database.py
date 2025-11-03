@@ -57,11 +57,11 @@ def init_database(use_cloud=False):
             
             conn.commit()
         
-        print(f"✅ Database '{db_name}' initialized successfully!")
+        print(f"Database '{db_name}' initialized successfully!")
         return True
         
     except Exception as e:
-        print(f"❌ Error initializing database: {str(e)}")
+        print(f"Error initializing database: {str(e)}")
         return False
 
 if __name__ == "__main__":
