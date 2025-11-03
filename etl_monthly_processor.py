@@ -151,6 +151,20 @@ class ETLMonthlyProcessor:
             except ValueError:
                 pass
         
+        # Pattern: YYYYMM (e.g., 202508 for August 2025)
+        date_pattern_compact = r'(\d{4})(\d{2})'
+        matches = re.finditer(date_pattern_compact, path_str)
+        for match in matches:
+            year_str, month_str = match.groups()
+            # Check if it looks like a date (year 2000-2099, month 01-12)
+            year = int(year_str)
+            month = int(month_str)
+            if 2000 <= year <= 2099 and 1 <= month <= 12:
+                try:
+                    return date(year, month, 1)
+                except ValueError:
+                    pass
+        
         # Pattern: month names (December 24, Agosto 25, etc.)
         month_names = {
             'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4,

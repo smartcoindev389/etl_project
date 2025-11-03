@@ -1,32 +1,52 @@
 # ETL Project - MySQL Cloud Historization
 
-ETL system for processing monthly CSV files and storing them in MySQL cloud database with full historization.
+Complete ETL system for processing monthly CSV files and storing them in MySQL database with full historization support.
 
 ## Features
 
+- ✅ **Nested folder support** - Automatically discovers and processes CSV files from multiple folders per month
 - ✅ Monthly CSV processing with historization
-- ✅ Bulk historical data loading
-- ✅ Duplicate file detection and prevention
+- ✅ Automatic column filtering (handles different CSV structures)
+- ✅ **Bulk historical data loading** - Loads ALL CSV files from nested folder structures automatically
+- ✅ Duplicate file detection and prevention (SHA256 hashing)
 - ✅ Complete audit trail for all loads
 - ✅ Support for local and cloud MySQL
-- ✅ Automatic month extraction from file paths
-- ✅ Scripted, repeatable processes
+- ✅ Automatic month extraction from file paths (YYYY-MM, YYYYMM, month names)
+- ✅ Scripted, repeatable processes (no manual work required)
+- ✅ Chunked processing for large files
+- ✅ Error handling and retry logic
 
 ## Project Structure
 
 ```
 etl_project/
-├── config.py                  # Configuration management
-├── etl_monthly_processor.py   # Main ETL processor for monthly files
-├── bulk_historical_loader.py # Bulk loader for historical data
+├── config.py                          # Configuration management
+├── etl_monthly_processor.py          # Basic ETL processor (filters columns automatically)
+├── etl_merge_processor.py            # Merge processor (replicates notebook logic)
+├── bulk_historical_loader.py         # Bulk loader for historical data
+├── bulk_load_all_script.py          # Complete bulk load script (recommended)
+├── test_mysql_connection.py          # Connection testing utility
+├── requirements.txt                   # Python dependencies
+├── .env.example                      # Environment variables template
+│
 ├── database/
-│   ├── schema.sql            # Database schema definition
-│   └── init_database.py      # Database initialization script
+│   ├── schema.sql                    # Base schema template
+│   ├── schema_resultados.sql         # Complete schema (111 data columns + metadata)
+│   └── init_database.py              # Database initialization
+│
 ├── utils/
-│   └── db_utils.py           # Database utility functions
-├── requirements.txt          # Python dependencies
-├── .env.example             # Environment variables template
-└── README.md                # This file
+│   ├── db_utils.py                   # Database utilities
+│   └── schema_generator.py           # Schema generator from CSV
+│
+└── fending data/                     # Client CSV files (ignored in git)
+    ├── Month1/                       # Example: Monthly folders
+    │   ├── Folder1/                  # Multiple folders per month
+    │   │   ├── resultados_analisis_completo.csv
+    │   │   └── grabaciones_multimedia.csv
+    │   └── Folder2/
+    │       └── todas_conversaciones.csv
+    └── Month2/
+        └── ...
 ```
 
 ## Setup
@@ -42,16 +62,35 @@ pip install -r requirements.txt
 Copy `.env.example` to `.env` and update with your database credentials:
 
 ```bash
-cp .env.example .env
+# Windows PowerShell
+Copy-Item .env.example .env
+
+# Or manually create .env file
 ```
 
 Edit `.env` with your MySQL credentials:
-- For **local**: Update `DB_HOST`, `DB_USER`, `DB_PASSWORD`
-- For **cloud**: Update `CLOUD_DB_*` variables
+
+```env
+# Local MySQL (for XAMPP)
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=etl_project
+
+# Cloud MySQL (when ready)
+CLOUD_DB_HOST=
+CLOUD_DB_PORT=3306
+CLOUD_DB_USER=
+CLOUD_DB_PASSWORD=
+CLOUD_DB_NAME=etl_project
+
+# ETL Configuration
+CSV_BASE_PATH=./data
+BATCH_SIZE=10000
+```
 
 ### 3. Initialize Database
-
-Initialize the database schema:
 
 ```bash
 # Local database
@@ -61,189 +100,371 @@ python database/init_database.py
 python database/init_database.py --cloud
 ```
 
-## Cloud MySQL Options (Free Tier)
+### 4. Test Connection
 
-### Recommended Free/Cheap Options:
+```bash
+# Local
+python test_mysql_connection.py
 
-1. **Railway** (Free tier available)
-   - https://railway.app
-   - Free tier: $5 credit/month
+# Cloud
+python test_mysql_connection.py --cloud
+```
 
-2. **PlanetScale** (Free tier)
-   - https://planetscale.com
-   - Free tier: 1 database, 1GB storage
+## XAMPP MySQL Configuration
 
-3. **Aiven** (Free trial)
-   - https://aiven.io
-   - Free trial with MySQL
+If you're using XAMPP and get "MySQL server has gone away" errors with large files:
 
-4. **AWS RDS** (Free tier for 12 months)
-   - https://aws.amazon.com/rds/
-   - Free tier: t2.micro instance
+### Fix MySQL Configuration
 
-### Setting Up Cloud MySQL
+1. Edit `C:\xampp\mysql\bin\my.ini` (as Administrator)
 
-1. Create account with chosen provider
-2. Create MySQL database instance
-3. Get connection details (host, port, user, password)
-4. Update `.env` file with `CLOUD_DB_*` variables
-5. Test connection:
-   ```bash
-   python test_mysql_connection.py
-   ```
+2. Find `[mysqld]` section and add:
+
+```ini
+[mysqld]
+max_allowed_packet = 256M
+wait_timeout = 600
+interactive_timeout = 600
+net_read_timeout = 600
+net_write_timeout = 600
+```
+
+3. Restart MySQL in XAMPP Control Panel:
+   - Click **Stop** on MySQL
+   - Wait a few seconds
+   - Click **Start** on MySQL
+
+### Alternative: Quick SQL Fix (Temporary)
+
+If you can't edit the file right now:
+
+1. Open **phpMyAdmin**: http://localhost/phpmyadmin
+2. Go to **SQL** tab
+3. Run:
+
+```sql
+SET GLOBAL max_allowed_packet = 268435456;
+SET GLOBAL wait_timeout = 600;
+SET GLOBAL interactive_timeout = 600;
+SET GLOBAL net_read_timeout = 600;
+SET GLOBAL net_write_timeout = 600;
+```
+
+**Note**: These settings reset when MySQL restarts, so edit `my.ini` for permanent fix.
 
 ## Usage
 
-### Monthly Processing
-
-Process a single CSV file:
+### Process Single CSV File
 
 ```bash
-python etl_monthly_processor.py --file path/to/file.csv --cloud
+# Process any CSV file (automatically filters columns to match database)
+python etl_monthly_processor.py --file "fending data\resultados_analisis_completo.csv"
+
+# Process final merged file
+python etl_monthly_processor.py --file "fending data\resultados_analisis_completo_metadata_final_nps2.csv"
 ```
 
-Process all files for a specific month:
+### Process All Files for a Month
 
 ```bash
-python etl_monthly_processor.py --month 2024-12 --path ./data --cloud
+python etl_monthly_processor.py --month 2025-08 --path "fending data"
 ```
+
+### Merge and Process (Recommended)
+
+Automatically finds and merges source files (replicates notebook logic):
+
+```bash
+# Process August 2025
+python etl_merge_processor.py --month 2025-08 --path "fending data"
+```
+
+This will:
+1. Find `resultados_analisis_completo*.csv` for the month
+2. Find `grabaciones_multimedia_*.csv` for the month
+3. Find `todas_conversaciones_*.csv` for the month
+4. Merge them together
+5. Load to database
 
 ### Bulk Historical Loading
 
-Load all historical data:
+**Loads ALL CSV files from nested folder structures automatically**
+
+The system automatically:
+- Discovers all CSV files recursively (including nested folders)
+- Groups files by month (even if in different folders)
+- Processes all files from all folders
+- Handles multiple folders per month
+- Handles multiple files per folder
 
 ```bash
-python bulk_historical_loader.py --path ./data --cloud
-```
+# Preview what will be loaded (dry run)
+python bulk_load_all_script.py --path "fending data" --dry-run
 
-Dry run (see what would be processed):
+# Load all historical data (from all folders)
+python bulk_load_all_script.py --path "fending data"
 
-```bash
-python bulk_historical_loader.py --path ./data --cloud --dry-run
-```
-
-Load specific date range:
-
-```bash
-python bulk_historical_loader.py \
-  --path ./data \
+# Load specific date range
+python bulk_load_all_script.py \
+  --path "fending data" \
   --start-month 2024-08 \
-  --end-month 2024-12 \
-  --cloud
+  --end-month 2024-12
+
+# Load with cloud database
+python bulk_load_all_script.py --path "fending data" --cloud
 ```
 
-### Database Utilities
-
-Check database statistics:
-
-```python
-from utils.db_utils import get_database_stats
-stats = get_database_stats(use_cloud=True)
-print(stats)
+**Alternative (original bulk loader):**
+```bash
+python bulk_historical_loader.py --path "fending data" --dry-run
+python bulk_historical_loader.py --path "fending data"
 ```
-
-Verify data integrity:
-
-```python
-from utils.db_utils import verify_data_integrity
-checks = verify_data_integrity(use_cloud=True)
-print(checks)
-```
-
-## CSV File Organization
-
-The system automatically detects data months from file paths. Supported patterns:
-
-- `2024-12/file.csv` → December 2024
-- `2024_12/file.csv` → December 2024
-- `Diciembre 24/file.csv` → December 2024
-- `Agosto 25/file.csv` → August 2025
 
 ## Database Schema
 
 ### Main Tables
 
-- **fact_records**: Main data table with historization
-- **audit_loads**: Complete audit trail of all ETL loads
-- **processed_files**: Track processed files to prevent duplicates
+- **fact_records**: Main data table (111 data columns + 7 metadata columns)
+  - Data columns: All motivo_*_flg, flag_agrupacion_*, metadata from merged files
+  - Metadata: source_file, data_month, load_ts, load_id
+  - Total: 118 columns
+
+- **audit_loads**: Complete ETL audit trail
+  - Tracks all file processing attempts
+  - Status, row counts, timing, errors
+
+- **processed_files**: File tracking and duplicate prevention
+  - SHA256 file hashing
+  - Prevents re-processing same files
+
 - **monthly_summary**: Aggregated monthly statistics
+
+### Schema Details
+
+The database schema (`database/schema_resultados.sql`) matches the final merged CSV structure:
+- 111 data columns from `resultados_analisis_completo_metadata_final_nps2.csv`
+- 7 metadata columns for historization
+- Automatic column filtering for files with different structures
+
+## CSV File Structure
+
+### Supported Files
+
+1. **resultados_analisis_completo.csv** (162 columns)
+   - Contains: nombre_archivo, fecha_procesamiento, motivo_* columns (with frase/fraser/simil/subfrases)
+   - System automatically filters to flag columns only
+
+2. **grabaciones_multimedia_*.csv** (18 columns)
+   - Multimedia recordings metadata
+   - Columns: conversation_id, archivo_multimedia, dates, queue info, etc.
+
+3. **todas_conversaciones_*.csv** (19 columns)
+   - All conversations metadata
+   - Columns: conversation_id, participant info, session details, etc.
+
+4. **resultados_analisis_completo_metadata_final_nps2.csv** (111 columns)
+   - FINAL merged table (ready to load directly)
+   - Contains: flags only + merged metadata + NPS data
+
+## Features Details
+
+### Automatic Column Filtering
+
+The ETL processor automatically:
+- Reads database schema columns
+- Filters CSV columns to match database
+- Only loads columns that exist in database
+- Handles files with different structures gracefully
+
+### Nested Folder Support
+
+The bulk loader handles complex folder structures:
+- **Multiple folders per month**: Automatically finds all CSV files in all subfolders
+- **Nested structures**: Recursively searches all subdirectories
+- **Multiple files per folder**: Processes all CSV files in each folder
+- **Organized by month**: Groups files by month regardless of folder structure
+
+Example structure supported:
+```
+data/
+├── 2024-08/
+│   ├── Folder1/
+│   │   ├── resultados_analisis_completo.csv
+│   │   └── grabaciones_multimedia.csv
+│   └── Folder2/
+│       └── todas_conversaciones.csv
+├── 2024-09/
+│   └── ...
+└── 2024-10/
+    ├── Subfolder1/
+    │   └── file1.csv
+    └── Subfolder2/
+        └── file2.csv
+```
+
+All files are automatically discovered and processed!
 
 ### Historization
 
-All records include:
-- `data_month`: Month of data (YYYY-MM-01)
-- `source_file`: Original CSV filename
-- `load_ts`: Timestamp when loaded
-- `load_id`: Reference to audit_loads table
+- **All records preserved**: Never deletes data
+- **Month tracking**: Each record has `data_month` (YYYY-MM-01)
+- **Source tracking**: `source_file` and `source_type` columns
+- **Load tracking**: Linked to `load_id` in audit table
+- **Timestamp tracking**: `load_ts` records when loaded
+- **Duplicate prevention**: Files tracked by SHA256 hash
 
-## Updating Schema for Your CSV Structure
+### Error Handling
 
-1. **Analyze your CSV files** to identify all columns
-2. **Update `database/schema.sql`**:
-   - Modify `fact_records` table to match your CSV columns
-   - Adjust data types as needed
-3. **Update `etl_monthly_processor.py`**:
-   - Modify `transform_data()` method if custom transformations needed
-   - Update `load_data_to_db()` column mapping if needed
-4. **Reinitialize database**:
-   ```bash
-   python database/init_database.py --cloud
-   ```
+- Connection retry logic for timeouts
+- Chunked processing for large files
+- Error logging in `audit_loads` table
+- Resume capability (skips already processed files)
 
-## Future Automation
+## Common Commands
 
-The system is designed for cloud automation:
-
-- **Google Cloud Scheduler**: Schedule monthly runs
-- **AWS Lambda**: Serverless monthly processing
-- **Airflow**: Orchestrate complex workflows
-- **GitHub Actions**: CI/CD for ETL processes
-
-Example automation command:
 ```bash
-python etl_monthly_processor.py --month $(date +%Y-%m) --path /cloud/storage/data --cloud
+# Test connection
+python test_mysql_connection.py
+
+# Initialize database
+python database/init_database.py
+
+# Process single file
+python etl_monthly_processor.py --file "path/to/file.csv"
+
+# Process month
+python etl_monthly_processor.py --month 2025-08 --path "fending data"
+
+# Merge and process (recommended for monthly processing)
+python etl_merge_processor.py --month 2025-08 --path "fending data"
+
+# Bulk load ALL files from nested folders (recommended for historical load)
+python bulk_load_all_script.py --path "fending data" --dry-run
+python bulk_load_all_script.py --path "fending data"
 ```
 
 ## Troubleshooting
 
-### Connection Issues
-
-Test connection:
+### "Table doesn't exist"
 ```bash
-python test_mysql_connection.py
+# Reinitialize database
+python database/init_database.py
 ```
 
-Update `.env` file with correct credentials.
+### "MySQL server has gone away"
+- **XAMPP**: Update `C:\xampp\mysql\bin\my.ini` (see XAMPP MySQL Configuration above)
+- **Other MySQL**: Update `max_allowed_packet` in MySQL config
+- **Quick fix**: Reduce `BATCH_SIZE` in `.env` to 1000
 
-### Schema Mismatch
+### "Connection failed"
+- Check `.env` file credentials
+- Verify MySQL is running (XAMPP Control Panel)
+- Test connection: `python test_mysql_connection.py`
 
-If you see column errors, update `database/schema.sql` and reinitialize:
+### "Column mismatch"
+- System automatically filters columns
+- If issue persists, check database schema matches CSV structure
+
+### Large Files Failing
+1. Update MySQL `max_allowed_packet` (see XAMPP MySQL Configuration)
+2. Reduce `BATCH_SIZE` in `.env`
+3. Process in smaller batches manually
+
+## Testing
+
+### Test with Sample Data
+
 ```bash
-python database/init_database.py --cloud
+# Test with small sample (100 rows)
+python etl_monthly_processor.py --file test_sample.csv
 ```
 
-### Duplicate Files
+### Verify Data Loaded
 
-The system automatically skips already processed files. To reprocess:
-```bash
-# Edit bulk_historical_loader.py or etl_monthly_processor.py
-# Set skip_duplicates=False
+Check database:
+```sql
+-- Count records
+SELECT COUNT(*) FROM fact_records;
+
+-- Check by month
+SELECT data_month, COUNT(*) 
+FROM fact_records 
+GROUP BY data_month;
+
+-- Check audit logs
+SELECT * FROM audit_loads ORDER BY start_ts DESC LIMIT 10;
 ```
+
+## Database Utilities
+
+```python
+from utils.db_utils import get_database_stats, verify_data_integrity
+
+# Get statistics
+stats = get_database_stats(use_cloud=False)
+print(f"Total records: {stats['total_records']}")
+print(f"Records by month: {stats['records_by_month']}")
+
+# Verify integrity
+checks = verify_data_integrity(use_cloud=False)
+print(f"All checks passed: {checks['all_passed']}")
+```
+
+## Cloud Deployment
+
+### Setup Cloud MySQL
+
+1. Choose provider (Railway, PlanetScale, AWS RDS, Aiven)
+2. Create MySQL database instance
+3. Get connection credentials
+4. Update `.env` with `CLOUD_DB_*` variables
+5. Test: `python test_mysql_connection.py --cloud`
+6. Initialize: `python database/init_database.py --cloud`
+
+### Automation Ready
+
+All scripts are CLI-based and ready for:
+- Google Cloud Scheduler
+- AWS Lambda / EventBridge
+- GitHub Actions
+- Cron jobs
+
+Example:
+```bash
+# Monthly automation
+python etl_merge_processor.py --month $(date +%Y-%m) --path /cloud/storage/data --cloud
+```
+
+## Project Status
+
+✅ **Complete and Ready for Production**
+
+- All core functionality implemented
+- Tested with local MySQL (XAMPP)
+- Ready for cloud deployment
+- Comprehensive error handling
+- Complete documentation
 
 ## Next Steps
 
-1. ✅ Get CSV file structure from client
-2. ✅ Update database schema to match CSV columns
-3. ✅ Update transform logic if needed
-4. ✅ Test with sample CSV files
-5. ✅ Load historical data
-6. ✅ Set up cloud MySQL instance
-7. ✅ Schedule monthly automation
+1. ✅ Set up local MySQL (XAMPP) - **DONE**
+2. ✅ Test with sample files - **DONE**
+3. ⚠️ Update MySQL config for large files (if needed)
+4. ⚠️ Set up cloud MySQL (when ready)
+5. ⚠️ Load all historical data
+6. ⚠️ Set up monthly automation
 
 ## Support
 
-For questions or issues, check:
-- Database logs in `audit_loads` table
-- Error messages in `audit_loads.error_message`
-- Processed files log in `processed_files` table
+For issues:
+1. Check `audit_loads` table for error details
+2. Review connection logs
+3. Verify MySQL configuration
+4. Test with smaller files first
+
+---
+
+**Version**: 1.0.0  
+**Last Updated**: October 31, 2025  
+**Status**: Production Ready
 
