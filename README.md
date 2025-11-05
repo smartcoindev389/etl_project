@@ -462,6 +462,11 @@ For issues:
 3. Verify MySQL configuration
 4. Test with smaller files first
 
+## Process Flow
+
+For visual flowcharts and detailed explanations (English and Spanish), see:
+- FLOWCHART.md
+
 ---
 
 **Version**: 1.0.0  

@@ -53,10 +53,13 @@ Examples:
         print(f"Please provide a valid path to your CSV files")
         sys.exit(1)
     
+    # Convert to absolute path and string for subprocess safety
+    base_path = str(base_path.resolve())
+    
     print("="*60)
     print("BULK LOAD - ALL CSV FILES")
     print("="*60)
-    print(f"Base path: {base_path.absolute()}")
+    print(f"Base path: {base_path}")
     print(f"Mode: {'DRY RUN (preview only)' if args.dry_run else 'LIVE (will load data)'}")
     print(f"Database: {'Cloud' if args.cloud else 'Local'}")
     print(f"Skip duplicates: {args.skip_duplicates}")
@@ -133,4 +136,3 @@ Examples:
 
 if __name__ == "__main__":
     main()
-

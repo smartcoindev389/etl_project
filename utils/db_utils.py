@@ -5,7 +5,7 @@ from sqlalchemy import create_engine, text
 from typing import Dict, List
 from config import DatabaseConfig
 
-def get_database_stats(use_cloud=False) -> Dict:
+def get_database_stats(use_cloud=True) -> Dict:
     """Get database statistics"""
     engine = create_engine(DatabaseConfig.get_connection_string(use_cloud))
     
@@ -50,7 +50,7 @@ def get_database_stats(use_cloud=False) -> Dict:
     
     return stats
 
-def verify_data_integrity(use_cloud=False) -> Dict:
+def verify_data_integrity(use_cloud=True) -> Dict:
     """Verify data integrity checks"""
     engine = create_engine(DatabaseConfig.get_connection_string(use_cloud))
     

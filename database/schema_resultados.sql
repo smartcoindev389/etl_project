@@ -205,9 +205,9 @@ CREATE TABLE IF NOT EXISTS monthly_summary (
 -- File tracking table: Track processed files to prevent duplicates
 CREATE TABLE IF NOT EXISTS processed_files (
   file_id BIGINT AUTO_INCREMENT PRIMARY KEY,
-  file_path VARCHAR(1000) NOT NULL UNIQUE,
+  file_path VARCHAR(1000) NOT NULL,
   file_name VARCHAR(500),
-  file_hash VARCHAR(64), -- SHA256 hash of file content
+  file_hash VARCHAR(64) UNIQUE, -- SHA256 hash of file content (used for uniqueness)
   file_size_bytes BIGINT,
   
   source_type VARCHAR(100),
@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS processed_files (
   process_count INT DEFAULT 1,
   
   INDEX idx_file_hash (file_hash),
+  INDEX idx_file_path (file_path(500)), -- Prefix index for long paths
   INDEX idx_data_month (data_month),
   INDEX idx_source_type (source_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

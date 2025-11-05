@@ -102,6 +102,10 @@ class ETLMonthlyProcessor:
                           rows_inserted: int = 0, rows_skipped: int = 0,
                           error_message: str = None, error_details: str = None):
         """Update audit load record with results"""
+        # Truncate error messages to fit in database columns
+        error_msg_truncated = error_message[:500] if error_message else None
+        error_details_truncated = error_details[:60000] if error_details else None
+        
         with self.engine.connect() as conn:
             conn.execute(
                 text("""
@@ -123,8 +127,8 @@ class ETLMonthlyProcessor:
                     "valid": rows_valid,
                     "inserted": rows_inserted,
                     "skipped": rows_skipped,
-                    "error_msg": error_message,
-                    "error_details": error_details,
+                    "error_msg": error_msg_truncated,
+                    "error_details": error_details_truncated,
                     "load_id": load_id
                 }
             )
@@ -208,10 +212,62 @@ class ETLMonthlyProcessor:
         # Add source type column
         df_transformed['source_type'] = source_type
         
+        # Convert datetime columns from ISO format to MySQL DATETIME format
+        # Only convert actual datetime columns (not flags)
+        datetime_column_patterns = ['fecha_inicio', 'fecha_fin', 'fecha_procesamiento', 'timestamp', 'created_at', 'updated_at']
+        required_datetime_cols = []
+        
+        for col in df_transformed.columns:
+            col_lower = col.lower()
+            # Skip flag columns (flg, flag) even if they contain datetime keywords
+            if 'flg' in col_lower or 'flag' in col_lower:
+                continue
+            # Only convert specific datetime columns
+            if any(pattern in col_lower for pattern in datetime_column_patterns):
+                try:
+                    # Store columns that are required (fecha_inicio, fecha_fin)
+                    if col_lower in ['fecha_inicio', 'fecha_fin']:
+                        required_datetime_cols.append(col)
+                    
+                    # Try to parse ISO format datetime strings
+                    df_transformed[col] = pd.to_datetime(
+                        df_transformed[col], 
+                        errors='coerce',
+                        format='mixed'  # Try multiple formats
+                    )
+                    # Convert to MySQL format (remove timezone if present)
+                    if pd.api.types.is_datetime64_any_dtype(df_transformed[col]):
+                        # If timezone-aware, convert to naive datetime
+                        if df_transformed[col].dt.tz is not None:
+                            df_transformed[col] = df_transformed[col].dt.tz_localize(None)
+                except Exception:
+                    # If conversion fails, leave as is
+                    pass
+        
+        # Filter out rows where required datetime columns are NULL
+        if required_datetime_cols:
+            initial_count = len(df_transformed)
+            for col in required_datetime_cols:
+                if col in df_transformed.columns:
+                    # Remove rows where this datetime column is NULL/NaT
+                    df_transformed = df_transformed[df_transformed[col].notna()]
+            filtered_count = len(df_transformed)
+            if initial_count != filtered_count:
+                print(f"  Filtered out {initial_count - filtered_count} rows with NULL datetime values")
+        
         # Basic data cleaning
-        # Remove leading/trailing whitespace from string columns
+        # Remove leading/trailing whitespace from string columns (but skip datetime columns)
+        datetime_cols_set = set()
+        for col in df_transformed.columns:
+            col_lower = col.lower()
+            if any(pattern in col_lower for pattern in datetime_column_patterns):
+                if 'flg' not in col_lower and 'flag' not in col_lower:
+                    datetime_cols_set.add(col)
+        
         for col in df_transformed.select_dtypes(include=['object']).columns:
-            df_transformed[col] = df_transformed[col].astype(str).str.strip()
+            # Skip datetime columns from string conversion
+            if col not in datetime_cols_set:
+                df_transformed[col] = df_transformed[col].astype(str).str.strip()
         
         # Replace 'nan' strings with actual NaN
         df_transformed = df_transformed.replace('nan', pd.NA)
@@ -407,11 +463,16 @@ class ETLMonthlyProcessor:
             error_msg = str(e)
             print(f"Error processing {file_path.name}: {error_msg}")
             
+            # Truncate error messages to fit in database columns
+            # TEXT can store up to 65,535 bytes, but we'll limit to 60KB to be safe
+            error_msg_truncated = error_msg[:500] if error_msg else None
+            error_details_truncated = str(e)[:60000] if str(e) else None
+            
             self.update_load_record(
                 load_id, 'FAILED',
                 rows_read=rows_read if 'rows_read' in locals() else 0,
-                error_message=error_msg[:500],  # Truncate if too long
-                error_details=str(e)
+                error_message=error_msg_truncated,
+                error_details=error_details_truncated
             )
             
             return {
