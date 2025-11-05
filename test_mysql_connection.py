@@ -78,23 +78,48 @@ def test_connection(use_cloud=False):
                     # Build test data with only required columns
                     test_data = {}
                     datetime_cols_to_convert = []
+                    date_cols_to_convert = []
                     
                     for col, data_type in required_cols.items():
+                        col_lower = col.lower()
+                        data_type_upper = data_type.upper()
+                        
+                        # Skip flag columns (they should be integers, not datetime)
+                        is_flag_column = col_lower.endswith('_flg') or col_lower.startswith('flag_')
+                        
                         if col == 'source_file':
                             test_data[col] = ['test_connection.csv']
                         elif col == 'data_month':
                             test_data[col] = ['2025-01-01']
-                        elif 'DATETIME' in data_type:
-                            # Only convert actual datetime columns (fecha_inicio, fecha_fin, fecha_procesamiento)
-                            if 'fecha' in col.lower() or 'timestamp' in col.lower():
+                            date_cols_to_convert.append(col)
+                        # Check if column is datetime-related by name pattern (even if stored as VARCHAR)
+                        # But exclude flag columns
+                        elif not is_flag_column and ('fecha' in col_lower or 'timestamp' in col_lower or 'date' in col_lower):
+                            # Handle DATETIME, TIMESTAMP, or DATE types
+                            if 'DATETIME' in data_type_upper or 'TIMESTAMP' in data_type_upper:
                                 test_data[col] = ['2025-01-01 00:00:00']
                                 datetime_cols_to_convert.append(col)
+                            elif 'DATE' in data_type_upper:
+                                test_data[col] = ['2025-01-01']
+                                date_cols_to_convert.append(col)
                             else:
+                                # Assume VARCHAR datetime columns should be datetime format
                                 test_data[col] = ['2025-01-01 00:00:00']
                                 datetime_cols_to_convert.append(col)
-                        elif 'DECIMAL' in data_type or 'INT' in data_type or 'TINYINT' in data_type:
+                        elif 'DATETIME' in data_type_upper or 'TIMESTAMP' in data_type_upper:
+                            test_data[col] = ['2025-01-01 00:00:00']
+                            datetime_cols_to_convert.append(col)
+                        elif 'DATE' in data_type_upper:
+                            test_data[col] = ['2025-01-01']
+                            date_cols_to_convert.append(col)
+                        elif is_flag_column:
+                            # Flag columns are always integers (TINYINT typically)
                             test_data[col] = [0]
-                        elif 'VARCHAR' in data_type:
+                        elif 'DECIMAL' in data_type_upper or 'DOUBLE' in data_type_upper or 'FLOAT' in data_type_upper:
+                            test_data[col] = [0.0]
+                        elif 'INT' in data_type_upper or 'TINYINT' in data_type_upper or 'SMALLINT' in data_type_upper or 'BIGINT' in data_type_upper:
+                            test_data[col] = [0]
+                        elif 'VARCHAR' in data_type_upper or 'TEXT' in data_type_upper or 'CHAR' in data_type_upper:
                             test_data[col] = ['TEST']
                         else:
                             test_data[col] = ['TEST']
@@ -106,10 +131,11 @@ def test_connection(use_cloud=False):
                     df = pd.DataFrame(test_data)
                     
                     # Convert date columns
-                    if 'data_month' in df.columns:
-                        df['data_month'] = pd.to_datetime(df['data_month']).dt.date
+                    for col in date_cols_to_convert:
+                        if col in df.columns:
+                            df[col] = pd.to_datetime(df[col]).dt.date
                     
-                    # Convert only actual datetime columns
+                    # Convert datetime columns
                     for col in datetime_cols_to_convert:
                         if col in df.columns:
                             df[col] = pd.to_datetime(df[col])

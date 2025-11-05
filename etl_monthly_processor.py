@@ -281,16 +281,18 @@ class ETLMonthlyProcessor:
         if df.empty:
             return 0
         
-        # Get list of columns that exist in the database
+        # Get list of columns that exist in the database and their requirements
         with self.engine.connect() as conn:
             result = conn.execute(text("""
-                SELECT COLUMN_NAME 
+                SELECT COLUMN_NAME, IS_NULLABLE, DATA_TYPE, COLUMN_TYPE
                 FROM INFORMATION_SCHEMA.COLUMNS 
                 WHERE TABLE_SCHEMA = DATABASE() 
                 AND TABLE_NAME = 'fact_records'
-                AND COLUMN_NAME NOT IN ('record_id', 'data_year', 'data_month_num')
+                AND COLUMN_NAME NOT IN ('record_id', 'data_year', 'data_month_num', 'load_ts')
             """))
-            db_columns = [row[0] for row in result]
+            db_column_info = {row[0]: {'nullable': row[1] == 'YES', 'data_type': row[2], 'column_type': row[3]} 
+                             for row in result}
+            db_columns = list(db_column_info.keys())
         
         # Filter dataframe to only include columns that exist in database
         # Keep metadata columns we'll add
@@ -311,12 +313,47 @@ class ETLMonthlyProcessor:
         df_filtered['data_month'] = data_month
         df_filtered['load_id'] = load_id
         
+        # Check for missing required columns and add defaults
+        missing_required = []
+        for col_name, col_info in db_column_info.items():
+            if col_name not in df_filtered.columns and not col_info['nullable']:
+                missing_required.append((col_name, col_info))
+        
+        if missing_required:
+            print(f"  Adding {len(missing_required)} missing required columns with default values")
+            for col_name, col_info in missing_required:
+                data_type = col_info['data_type'].upper()
+                col_type_lower = col_info['column_type'].lower()
+                
+                # Check for integer types (including variations)
+                if ('INT' in data_type or 'INTEGER' in data_type) or ('flg' in col_name.lower() or 'flag' in col_name.lower()):
+                    df_filtered[col_name] = 0
+                elif 'DATETIME' in data_type or 'datetime' in col_type_lower or 'timestamp' in col_type_lower:
+                    # For fecha_procesamiento, use current timestamp; for others, use data_month
+                    if 'procesamiento' in col_name.lower():
+                        df_filtered[col_name] = pd.Timestamp.now()
+                    else:
+                        df_filtered[col_name] = pd.Timestamp(data_month)
+                elif data_type in ['DECIMAL', 'DOUBLE', 'FLOAT', 'NUMERIC']:
+                    df_filtered[col_name] = 0.0
+                elif data_type in ['VARCHAR', 'TEXT', 'CHAR']:
+                    # For nombre_archivo, use source_file name
+                    if 'nombre_archivo' in col_name.lower() or 'nombre' in col_name.lower():
+                        df_filtered[col_name] = Path(source_file).name
+                    else:
+                        df_filtered[col_name] = ''
+                else:
+                    # Default to empty string for other types
+                    df_filtered[col_name] = ''
+        
         print(f"  Filtered to {len(available_cols)} matching columns (from {len(df.columns)} CSV columns)")
+        if missing_required:
+            print(f"  Added {len(missing_required)} required columns with defaults")
         
         try:
             # Use to_sql with chunking for large datasets
-            # Process in smaller chunks to avoid connection timeouts
-            chunk_size = min(self.config.BATCH_SIZE, 5000)  # Smaller chunks for large files
+            # Process in smaller chunks to avoid SQL statement size limits
+            chunk_size = min(self.config.BATCH_SIZE, 100)  # Small chunks to avoid SQL size limits
             
             total_rows = 0
             num_chunks = (len(df_filtered) + chunk_size - 1) // chunk_size
@@ -326,14 +363,13 @@ class ETLMonthlyProcessor:
                 chunk_num = i // chunk_size + 1
                 
                 try:
-                    # Recreate connection for each chunk to avoid timeouts
+                    # Use smaller chunksize without method='multi' to avoid SQL statement size limits
                     rows = chunk.to_sql(
                         'fact_records',
                         self.engine,
                         if_exists='append',
                         index=False,
-                        chunksize=min(len(chunk), 1000),
-                        method='multi'
+                        chunksize=min(len(chunk), 50)  # Very small chunks to avoid SQL size limits
                     )
                     total_rows += len(chunk) if not isinstance(rows, int) else rows
                     print(f"  Loaded chunk {chunk_num}/{num_chunks}: {len(chunk)} rows")
@@ -358,8 +394,7 @@ class ETLMonthlyProcessor:
                             self.engine,
                             if_exists='append',
                             index=False,
-                            chunksize=min(len(chunk), 1000),
-                            method='multi'
+                            chunksize=min(len(chunk), 50)  # Small chunks to avoid SQL size limits
                         )
                         total_rows += len(chunk) if not isinstance(rows, int) else rows
                         print(f"  Retry successful: chunk {chunk_num} loaded")
