@@ -48,6 +48,7 @@ logs/
 # Data files (client data)
 data/
 *.csv
+*.sql
 *.xlsx
 bulk_load_report.txt
 
