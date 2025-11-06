@@ -2,6 +2,7 @@
 -- Inferred from first 2000 rows
 
 CREATE TABLE IF NOT EXISTS `flags_resumen_total_con_pagos_atc` (
+  `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
   `nombre_archivo` VARCHAR(255) NOT NULL,
   `motivos_no_pago` VARCHAR(255) NOT NULL,
   `tamano_archivo_kb` TINYINT NOT NULL,

@@ -55,6 +55,8 @@ def generate_sql_for_csv(csv: Path, out_dir: Path, sample_rows: int = 2000) -> P
 		mapping[c] = cand
 
 	lines.append(f"CREATE TABLE IF NOT EXISTS `{table_name}` (")
+	# Add surrogate primary key as first column
+	lines.append("  `id` BIGINT AUTO_INCREMENT PRIMARY KEY,")
 	for i, col in enumerate(df.columns):
 		safe_col = mapping[col]
 		mysql_type = infer_mysql_type(df[col], col)

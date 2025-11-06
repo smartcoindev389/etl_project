@@ -62,6 +62,8 @@ def generate_create_table_sql(df: pd.DataFrame, table_name: str, col_map: dict) 
 	"""Generate CREATE TABLE with quoted table/column names and inferred MySQL types."""
 	schema_lines: List[str] = []
 	schema_lines.append(f"CREATE TABLE IF NOT EXISTS `{table_name}` (")
+	# Add surrogate primary key as first column
+	schema_lines.append("  `id` BIGINT AUTO_INCREMENT PRIMARY KEY,")
 	# Columns
 	for i, col in enumerate(df.columns):
 		safe_col = col_map[col]

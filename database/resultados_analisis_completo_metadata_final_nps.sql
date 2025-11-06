@@ -2,6 +2,7 @@
 -- Inferred from first 2000 rows
 
 CREATE TABLE IF NOT EXISTS `resultados_analisis_completo_metadata_final_nps` (
+  `id` BIGINT AUTO_INCREMENT PRIMARY KEY,
   `nombre_archivo` VARCHAR(255) NOT NULL,
   `fecha_procesamiento` DATETIME NOT NULL,
   `motivo_Anular_tarjeta_flg` TINYINT(1) NOT NULL,
