@@ -26,12 +26,37 @@ def infer_mysql_type(series: pd.Series, col_name: str) -> str:
     # Check dtype
     dtype = series.dtype
     
-    # Integer types
-    if pd.api.types.is_integer_dtype(dtype):
-        max_val = series.max()
-        min_val = series.min()
+    # Integer types - check both integer dtype and float columns that contain only integers
+    is_integer_dtype = pd.api.types.is_integer_dtype(dtype)
+    is_float_with_integers = False
+    
+    if pd.api.types.is_float_dtype(dtype):
+        # Check if float column contains only integers (or NaN)
+        non_null = series.dropna()
+        if len(non_null) > 0:
+            # Check if all non-null values are whole numbers
+            is_float_with_integers = all(float(v).is_integer() for v in non_null)
+    
+    if is_integer_dtype or is_float_with_integers:
+        # Get max/min values, handling NaN
+        non_null_series = series.dropna()
+        if len(non_null_series) == 0:
+            return 'BIGINT'  # Default to BIGINT if all NULLs
+        
+        if is_integer_dtype:
+            max_val = series.max()
+            min_val = series.min()
+        else:
+            # Convert float integers to int for comparison
+            max_val = int(non_null_series.max())
+            min_val = int(non_null_series.min())
+        
         if max_val is not pd.NA and min_val is not pd.NA:
-            if max_val <= 127 and min_val >= -128:
+            # Check for large numbers (like account numbers, credit card numbers)
+            # If max value exceeds INT max, use BIGINT
+            if max_val > 2147483647 or min_val < -2147483648:
+                return 'BIGINT'
+            elif max_val <= 127 and min_val >= -128:
                 return 'TINYINT'
             elif max_val <= 32767 and min_val >= -32768:
                 return 'SMALLINT'
@@ -39,9 +64,9 @@ def infer_mysql_type(series: pd.Series, col_name: str) -> str:
                 return 'INT'
             else:
                 return 'BIGINT'
-        return 'INT'
+        return 'BIGINT'  # Default to BIGINT for safety
     
-    # Float types
+    # Float types (non-integer floats)
     if pd.api.types.is_float_dtype(dtype):
         return 'DECIMAL(15,2)'
     

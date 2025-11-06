@@ -11,6 +11,8 @@ Complete ETL system for processing monthly CSV files and storing them in MySQL d
 - ✅ Duplicate file detection and prevention (SHA256 hashing)
 - ✅ Complete audit trail for all loads
 - ✅ Support for local and cloud MySQL
+- ✅ **Automatic PRIMARY KEY generation** - All tables include surrogate keys for cloud compatibility
+- ✅ **Single upload_reports table** - Centralized tracking of all CSV uploads
 - ✅ Automatic month extraction from file paths (YYYY-MM, YYYYMM, month names)
 - ✅ Scripted, repeatable processes (no manual work required)
 - ✅ Chunked processing for large files
@@ -23,6 +25,8 @@ etl_project/
 ├── config.py                          # Configuration management
 ├── etl_monthly_processor.py          # Basic ETL processor (filters columns automatically)
 ├── etl_merge_processor.py            # Merge processor (replicates notebook logic)
+├── create_tables_from_csvs.py        # Create one table per CSV file (4-table mode)
+├── monthly_loader.py                 # Monthly CSV loader (4-table mode)
 ├── bulk_historical_loader.py         # Bulk loader for historical data
 ├── bulk_load_all_script.py          # Complete bulk load script (recommended)
 ├── test_mysql_connection.py          # Connection testing utility
@@ -32,7 +36,11 @@ etl_project/
 ├── database/
 │   ├── schema.sql                    # Base schema template
 │   ├── schema_resultados.sql         # Complete schema (111 data columns + metadata)
-│   └── init_database.py              # Database initialization
+│   ├── init_database.py              # Database initialization
+│   └── *.sql                         # Auto-generated SQL files (one per CSV)
+│
+├── tools/
+│   └── generate_sql_from_csvs.py     # Generate CREATE TABLE SQL from CSVs
 │
 ├── utils/
 │   ├── db_utils.py                   # Database utilities
@@ -181,15 +189,24 @@ python create_tables_from_csvs.py --path "fending_data"
 # SELECT COUNT(*) FROM flags_resumen_total_con_pagos_atc;
 # SELECT COUNT(*) FROM flags_resumen_total_con_pagos_galicia;
 # SELECT COUNT(*) FROM flags_resumen_total_con_morosidad;
+# SELECT * FROM upload_reports ORDER BY report_id DESC LIMIT 10;
 ```
 
 Notes:
-- Table names equal CSV filenames without the .csv extension.
-- Column names are normalized and truncated to respect MySQL's 64‑char limit; the same mapping is used when inserting.
+- Table names equal CSV filenames without the .csv extension
+- All tables include an auto-increment `id` PRIMARY KEY column (required for cloud databases)
+- Column names are normalized and truncated to respect MySQL's 64‑char limit; the same mapping is used when inserting
+- Upload metadata is logged to the `upload_reports` table
 
 ### Dynamic: One table per CSV in `fending_data` (names follow the files)
 
 The project dynamically discovers all CSVs in a folder and creates one table per file, with the table name equal to the CSV filename (without `.csv`). It then loads the file data into its matching table.
+
+**Key Features:**
+- ✅ Automatic surrogate primary keys (`id BIGINT AUTO_INCREMENT PRIMARY KEY`) for cloud compatibility
+- ✅ Single global `upload_reports` table tracks all uploads
+- ✅ Column names normalized and truncated to MySQL's 64-character limit
+- ✅ Works with both local and cloud MySQL databases
 
 End-to-end flow (local):
 
@@ -210,12 +227,15 @@ python create_tables_from_csvs.py --path "fending_data" --cloud
 #   SHOW TABLES;
 #   -- Example
 #   SELECT COUNT(*) FROM resultados_analisis_completo_metadata_final_nps;
+#   SELECT * FROM upload_reports ORDER BY report_id DESC LIMIT 10;
 ```
 
 Notes:
-- Column names are normalized to valid MySQL identifiers (ASCII, underscores) and truncated to <= 64 chars with a short hash to avoid the MySQL 1059 identifier-length error. The same mapping is used for CREATE TABLE and for inserts.
+- **Primary Keys**: All tables automatically include an `id` column as PRIMARY KEY (required for cloud databases with `sql_require_primary_key` enabled)
+- **Column Names**: Normalized to valid MySQL identifiers (ASCII, underscores) and truncated to <= 64 chars with a short hash to avoid the MySQL 1059 identifier-length error. The same mapping is used for CREATE TABLE and for inserts.
+- **Upload Reports**: All uploads are logged to a single `upload_reports` table with metadata (file path, row counts, duration, timestamps)
 
-### Create 4 tables named exactly like the CSV files (one-off import)
+### Create tables named exactly like the CSV files (one-off import)
 
 If you need to create one table per CSV with the table name equal to the CSV filename (without the .csv extension, preserving spaces and parentheses), use the helper script:
 
@@ -231,8 +251,10 @@ python create_tables_from_csvs.py --path "fending_data" --sample 1000 --chunksiz
 ```
 
 Notes:
-- The script infers MySQL types per column from a sample of the CSV and creates tables with quoted identifiers to allow spaces/parentheses in names.
-- It then loads the full CSV data in chunks into each created table.
+- **Automatic Primary Keys**: All tables include an auto-increment `id` PRIMARY KEY column (first column)
+- The script infers MySQL types per column from a sample of the CSV and creates tables with quoted identifiers to allow spaces/parentheses in names
+- It then loads the full CSV data in chunks into each created table
+- Upload metadata is logged to the `upload_reports` table
 
 ### Process Single CSV File
 
@@ -245,6 +267,24 @@ python etl_monthly_processor.py --file "fending_data\resultados_analisis_complet
 ```
 
 ### Process All Files for a Month
+
+**Option 1: Monthly Loader (4-table mode, recommended)**
+
+```bash
+# Process specific month
+python monthly_loader.py --path "fending_data" --month 2025-08
+
+# Process all CSVs (no month filter)
+python monthly_loader.py --path "fending_data"
+
+# Cloud mode
+python monthly_loader.py --path "fending_data" --month 2025-08 --cloud
+
+# With custom settings
+python monthly_loader.py --path "fending_data" --month 2025-08 --chunksize 5000 --sample 1000
+```
+
+**Option 2: Legacy Monthly Processor**
 
 ```bash
 python etl_monthly_processor.py --month 2025-08 --path "fending_data"
@@ -302,7 +342,23 @@ python bulk_historical_loader.py --path "fending_data"
 
 ## Database Schema
 
-### Main Tables
+### Main Tables (Dynamic Mode - 4-table structure)
+
+When using `create_tables_from_csvs.py` or `monthly_loader.py`, the system creates:
+
+- **One table per CSV file** (table name = CSV filename without `.csv`)
+  - Example: `flags_resumen_total_con_morosidad`, `resultados_analisis_completo_metadata_final_nps`
+  - Each table includes:
+    - `id` BIGINT AUTO_INCREMENT PRIMARY KEY (first column, required for cloud databases)
+    - All CSV columns with normalized names (ASCII-safe, <= 64 chars)
+
+- **upload_reports**: Single global table tracking all uploads
+  - Columns: `report_id`, `table_name`, `source_file`, `file_size_bytes`, `rows_read`, `chunksize`, `sample_rows`, `status`, `error_message`, `started_ts`, `completed_ts`, `duration_seconds`
+  - One row per CSV file processed
+
+### Legacy Tables (Monthly Merge Mode)
+
+When using `etl_monthly_processor.py` or `etl_merge_processor.py`:
 
 - **fact_records**: Main data table (111 data columns + 7 metadata columns)
   - Data columns: All motivo_*_flg, flag_agrupacion_*, metadata from merged files
@@ -499,7 +555,35 @@ print(f"All checks passed: {checks['all_passed']}")
 3. Get connection credentials
 4. Update `.env` with `CLOUD_DB_*` variables
 5. Test: `python test_mysql_connection.py --cloud`
-6. Initialize: `python database/init_database.py --cloud`
+
+### Cloud Database Requirements
+
+**Important**: Most cloud MySQL providers (including PlanetScale) require tables to have a PRIMARY KEY.
+
+✅ **This project automatically handles this** - All tables created via `create_tables_from_csvs.py` or `monthly_loader.py` include an auto-increment `id` PRIMARY KEY column.
+
+### Running in Cloud Mode
+
+```bash
+# Generate SQL files (same for local and cloud)
+python tools/generate_sql_from_csvs.py --path "fending_data" --sample 2000
+
+# Initialize cloud database
+python database/init_database.py --cloud
+
+# Load data to cloud
+python create_tables_from_csvs.py --path "fending_data" --cloud
+
+# Or use monthly loader
+python monthly_loader.py --path "fending_data" --cloud
+```
+
+### Cloud-Specific Features
+
+- ✅ Automatic PRIMARY KEY generation (required by `sql_require_primary_key`)
+- ✅ Column name normalization (ASCII-safe, <= 64 chars)
+- ✅ Chunked data loading for large files
+- ✅ Upload tracking via `upload_reports` table
 
 ### Automation Ready
 

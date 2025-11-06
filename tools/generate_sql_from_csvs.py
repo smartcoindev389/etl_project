@@ -60,7 +60,8 @@ def generate_sql_for_csv(csv: Path, out_dir: Path, sample_rows: int = 2000) -> P
 	for i, col in enumerate(df.columns):
 		safe_col = mapping[col]
 		mysql_type = infer_mysql_type(df[col], col)
-		nullable = "NULL" if df[col].isna().any() else "NOT NULL"
+		# Make all columns nullable by default (safer - sample may not have all NULLs)
+		nullable = "NULL"
 		comma = "," if i < len(df.columns) - 1 else ""
 		lines.append(f"  `{safe_col}` {mysql_type} {nullable}{comma}")
 	lines.append(") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;")
