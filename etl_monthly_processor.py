@@ -192,7 +192,20 @@ class ETLMonthlyProcessor:
         """Identify source type from filename"""
         filename_lower = file_path.name.lower()
         
-        if 'resultados_analisis_completo' in filename_lower or 'resultados' in filename_lower:
+        # Check for merged results with metadata and NPS (already processed)
+        if 'resultados_analisis_completo' in filename_lower and 'metadata_final' in filename_lower and 'nps' in filename_lower:
+            return 'resultados_analisis_completo_metadata_final_nps'
+        # Check for flags files with payments ATC
+        elif 'flags_resumen_total_con_pagos_atc' in filename_lower or 'flags' in filename_lower and 'pagos_atc' in filename_lower:
+            return 'flags_resumen_total_con_pagos_atc'
+        # Check for flags files with payments Galicia
+        elif 'flags_resumen_total_con_pagos_galicia' in filename_lower or 'flags' in filename_lower and 'pagos_galicia' in filename_lower:
+            return 'flags_resumen_total_con_pagos_galicia'
+        # Check for flags files with morosidad (delinquency)
+        elif 'flags_resumen_total_con_morosidad' in filename_lower or 'flags' in filename_lower and 'morosidad' in filename_lower:
+            return 'flags_resumen_total_con_morosidad'
+        # Check for original resultados files
+        elif 'resultados_analisis_completo' in filename_lower or 'resultados' in filename_lower:
             return 'resultados_analisis_completo'
         elif 'metadata' in filename_lower:
             return 'metadata'

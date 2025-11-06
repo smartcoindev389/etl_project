@@ -46,7 +46,7 @@ env/
 logs/
 
 # Data files (client data)
-/fending data/
+# /fending data/
 data/
 *.csv
 *.xlsx

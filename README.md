@@ -38,7 +38,7 @@ etl_project/
 │   ├── db_utils.py                   # Database utilities
 │   └── schema_generator.py           # Schema generator from CSV
 │
-└── fending data/                     # Client CSV files (ignored in git)
+└── fending_data/                     # Client CSV files (ignored in git)
     ├── Month1/                       # Example: Monthly folders
     │   ├── Folder1/                  # Multiple folders per month
     │   │   ├── resultados_analisis_completo.csv
@@ -154,20 +154,100 @@ SET GLOBAL net_write_timeout = 600;
 
 ## Usage
 
+### Quickstart (from scratch, local MySQL)
+
+```bash
+# 0) Install dependencies
+pip install -r requirements.txt
+
+# 1) Configure environment
+Copy-Item .env.example .env   # then edit .env (DB_HOST/USER/PASSWORD/DB_NAME)
+
+# 2) Test connection
+python test_mysql_connection.py
+
+# 3) Generate CREATE TABLE SQLs from whatever CSVs are in fending_data
+python tools/generate_sql_from_csvs.py --path "fending_data" --sample 2000
+
+# 4) Apply all generated SQLs to create/update tables
+python database/init_database.py
+
+# 5) Load CSV data into tables matching the file names
+python create_tables_from_csvs.py --path "fending_data"
+
+# 6) Verify in MySQL
+# SHOW TABLES;
+# SELECT COUNT(*) FROM resultados_analisis_completo_metadata_final_nps;
+# SELECT COUNT(*) FROM flags_resumen_total_con_pagos_atc;
+# SELECT COUNT(*) FROM flags_resumen_total_con_pagos_galicia;
+# SELECT COUNT(*) FROM flags_resumen_total_con_morosidad;
+```
+
+Notes:
+- Table names equal CSV filenames without the .csv extension.
+- Column names are normalized and truncated to respect MySQL's 64‑char limit; the same mapping is used when inserting.
+
+### Dynamic: One table per CSV in `fending_data` (names follow the files)
+
+The project dynamically discovers all CSVs in a folder and creates one table per file, with the table name equal to the CSV filename (without `.csv`). It then loads the file data into its matching table.
+
+End-to-end flow (local):
+
+```bash
+# 1) Generate CREATE TABLE SQL files from whatever CSVs are present
+python tools/generate_sql_from_csvs.py --path "fending_data" --sample 2000
+
+# 2) Apply all generated SQLs to (re)create the tables
+python database/init_database.py           # local
+python database/init_database.py --cloud   # cloud
+
+# 3) Load the CSV data into the database tables that match each file name
+python create_tables_from_csvs.py --path "fending_data"
+python create_tables_from_csvs.py --path "fending_data" --cloud
+
+# 4) Verify
+# In MySQL:
+#   SHOW TABLES;
+#   -- Example
+#   SELECT COUNT(*) FROM resultados_analisis_completo_metadata_final_nps;
+```
+
+Notes:
+- Column names are normalized to valid MySQL identifiers (ASCII, underscores) and truncated to <= 64 chars with a short hash to avoid the MySQL 1059 identifier-length error. The same mapping is used for CREATE TABLE and for inserts.
+
+### Create 4 tables named exactly like the CSV files (one-off import)
+
+If you need to create one table per CSV with the table name equal to the CSV filename (without the .csv extension, preserving spaces and parentheses), use the helper script:
+
+```bash
+# Local database
+python create_tables_from_csvs.py --path "fending_data"
+
+# Cloud database
+python create_tables_from_csvs.py --path "fending_data" --cloud
+
+# Optional tuning
+python create_tables_from_csvs.py --path "fending_data" --sample 1000 --chunksize 5000
+```
+
+Notes:
+- The script infers MySQL types per column from a sample of the CSV and creates tables with quoted identifiers to allow spaces/parentheses in names.
+- It then loads the full CSV data in chunks into each created table.
+
 ### Process Single CSV File
 
 ```bash
 # Process any CSV file (automatically filters columns to match database)
-python etl_monthly_processor.py --file "fending data\resultados_analisis_completo.csv"
+python etl_monthly_processor.py --file "fending_data\flags_resumen_total_con_morosidad.csv"
 
 # Process final merged file
-python etl_monthly_processor.py --file "fending data\resultados_analisis_completo_metadata_final_nps2.csv"
+python etl_monthly_processor.py --file "fending_data\resultados_analisis_completo_metadata_final_nps2.csv"
 ```
 
 ### Process All Files for a Month
 
 ```bash
-python etl_monthly_processor.py --month 2025-08 --path "fending data"
+python etl_monthly_processor.py --month 2025-08 --path "fending_data"
 ```
 
 ### Merge and Process (Recommended)
@@ -176,7 +256,7 @@ Automatically finds and merges source files (replicates notebook logic):
 
 ```bash
 # Process August 2025
-python etl_merge_processor.py --month 2025-08 --path "fending data"
+python etl_merge_processor.py --month 2025-08 --path "fending_data"
 ```
 
 This will:
@@ -199,25 +279,25 @@ The system automatically:
 
 ```bash
 # Preview what will be loaded (dry run)
-python bulk_load_all_script.py --path "fending data" --dry-run
+python bulk_load_all_script.py --path "fending_data" --dry-run
 
 # Load all historical data (from all folders)
-python bulk_load_all_script.py --path "fending data"
+python bulk_load_all_script.py --path "fending_data"
 
 # Load specific date range
 python bulk_load_all_script.py \
-  --path "fending data" \
+  --path "fending_data" \
   --start-month 2024-08 \
   --end-month 2024-12
 
 # Load with cloud database
-python bulk_load_all_script.py --path "fending data" --cloud
+python bulk_load_all_script.py --path "fending_data" --cloud
 ```
 
 **Alternative (original bulk loader):**
 ```bash
-python bulk_historical_loader.py --path "fending data" --dry-run
-python bulk_historical_loader.py --path "fending data"
+python bulk_historical_loader.py --path "fending_data" --dry-run
+python bulk_historical_loader.py --path "fending_data"
 ```
 
 ## Database Schema
@@ -333,14 +413,14 @@ python database/init_database.py
 python etl_monthly_processor.py --file "path/to/file.csv"
 
 # Process month
-python etl_monthly_processor.py --month 2025-08 --path "fending data"
+python etl_monthly_processor.py --month 2025-08 --path "fending_data"
 
 # Merge and process (recommended for monthly processing)
-python etl_merge_processor.py --month 2025-08 --path "fending data"
+python etl_merge_processor.py --month 2025-08 --path "fending_data"
 
 # Bulk load ALL files from nested folders (recommended for historical load)
-python bulk_load_all_script.py --path "fending data" --dry-run
-python bulk_load_all_script.py --path "fending data"
+python bulk_load_all_script.py --path "fending_data" --dry-run
+python bulk_load_all_script.py --path "fending_data"
 ```
 
 ## Troubleshooting

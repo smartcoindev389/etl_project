@@ -25,6 +25,10 @@ class ETLMergeProcessor(ETLMonthlyProcessor):
         
         files = {
             'resultados': [],
+            'resultados_metadata_final_nps': [],
+            'pagos_atc': [],
+            'pagos_galicia': [],
+            'morosidad': [],
             'grabaciones_multimedia': [],
             'todas_conversaciones': [],
             'nps': []
@@ -38,15 +42,28 @@ class ETLMergeProcessor(ETLMonthlyProcessor):
             path_str = str(csv_file)
             
             # Check if file matches the month
-            if month_str in path_str or month_str_alt in path_str:
+            if data_month is None or month_str in path_str or month_str_alt in path_str:
                 
-                if 'resultados_analisis_completo' in filename_lower and 'metadata_final' not in filename_lower:
+                # Updated results with metadata and NPS (already merged)
+                if 'resultados_analisis_completo' in filename_lower and 'metadata_final' in filename_lower and 'nps' in filename_lower:
+                    files['resultados_metadata_final_nps'].append(csv_file)
+                # Original resultados files (not merged)
+                elif 'resultados_analisis_completo' in filename_lower and 'metadata_final' not in filename_lower:
                     files['resultados'].append(csv_file)
+                # Flags files with ATC payments
+                elif 'flags_resumen_total_con_pagos_atc' in filename_lower or ('flags' in filename_lower and 'pagos_atc' in filename_lower):
+                    files['pagos_atc'].append(csv_file)
+                # Flags files with Galicia payments
+                elif 'flags_resumen_total_con_pagos_galicia' in filename_lower or ('flags' in filename_lower and 'pagos_galicia' in filename_lower):
+                    files['pagos_galicia'].append(csv_file)
+                # Flags files with morosidad (delinquency)
+                elif 'flags_resumen_total_con_morosidad' in filename_lower or ('flags' in filename_lower and 'morosidad' in filename_lower):
+                    files['morosidad'].append(csv_file)
                 elif 'grabaciones_multimedia' in filename_lower:
                     files['grabaciones_multimedia'].append(csv_file)
                 elif 'todas_conversaciones' in filename_lower:
                     files['todas_conversaciones'].append(csv_file)
-                elif 'nps' in filename_lower:
+                elif 'nps' in filename_lower and 'metadata_final' not in filename_lower:
                     files['nps'].append(csv_file)
         
         return files
@@ -80,6 +97,34 @@ class ETLMergeProcessor(ETLMonthlyProcessor):
         print(f"Loading conversaciones: {file_path.name}")
         df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
         print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
+        return df
+    
+    def load_pagos_atc(self, file_path: Path) -> pd.DataFrame:
+        """Load flags_resumen_total_con_pagos_atc CSV"""
+        print(f"Loading pagos_atc: {file_path.name}")
+        df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
+        print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
+        return df
+    
+    def load_pagos_galicia(self, file_path: Path) -> pd.DataFrame:
+        """Load flags_resumen_total_con_pagos_galicia CSV"""
+        print(f"Loading pagos_galicia: {file_path.name}")
+        df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
+        print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
+        return df
+    
+    def load_morosidad(self, file_path: Path) -> pd.DataFrame:
+        """Load flags_resumen_total_con_morosidad CSV"""
+        print(f"Loading morosidad: {file_path.name}")
+        df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
+        print(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
+        return df
+    
+    def load_resultados_metadata_final_nps(self, file_path: Path) -> pd.DataFrame:
+        """Load resultados_analisis_completo_metadata_final_nps CSV (already merged)"""
+        print(f"Loading resultados_metadata_final_nps: {file_path.name}")
+        df = pd.read_csv(file_path, encoding='utf-8', low_memory=False)
+        print(f"  Loaded {len(df)} rows, {len(df.columns)} columns (already merged)")
         return df
     
     def merge_data(self, resultados_df: pd.DataFrame,
@@ -154,6 +199,7 @@ class ETLMergeProcessor(ETLMonthlyProcessor):
     def process_monthly_merge(self, data_month: date, base_path: Path = None) -> Dict:
         """
         Process and merge all CSV files for a specific month
+        Updated to handle new file types: resultados_metadata_final_nps, pagos_atc, pagos_galicia, morosidad
         """
         if base_path is None:
             base_path = Path(self.config.CSV_BASE_PATH)
@@ -171,11 +217,81 @@ class ETLMergeProcessor(ETLMonthlyProcessor):
         # Find files
         files = self.find_monthly_files(base_path, data_month)
         
-        # Load resultados (required)
+        # Check if we have already merged resultados_metadata_final_nps file (preferred)
+        if files['resultados_metadata_final_nps']:
+            print("Found already merged resultados_metadata_final_nps file - processing directly")
+            merged_df = self.load_resultados_metadata_final_nps(files['resultados_metadata_final_nps'][0])
+            source_type = 'resultados_analisis_completo_metadata_final_nps'
+            source_file = files['resultados_metadata_final_nps'][0].name
+            file_size = files['resultados_metadata_final_nps'][0].stat().st_size
+            
+            # Transform
+            print("Transforming data...")
+            merged_df = self.transform_data(merged_df, source_type)
+            
+            # Create load record
+            load_id = self.create_load_record(
+                source_file=source_file[:500],
+                source_type=source_type,
+                file_path=str(base_path),
+                data_month=data_month,
+                file_size=file_size
+            )
+            
+            try:
+                # Load to database
+                print("Loading to database...")
+                rows_inserted = self.load_data_to_db(
+                    merged_df, load_id, source_file, data_month
+                )
+                
+                # Register file
+                file_hash = self.calculate_file_hash(files['resultados_metadata_final_nps'][0])
+                self.register_file_processing(
+                    files['resultados_metadata_final_nps'][0], file_hash, source_type, data_month, file_size
+                )
+                
+                # Update load record
+                self.update_load_record(
+                    load_id, 'COMPLETED',
+                    rows_read=len(merged_df),
+                    rows_valid=len(merged_df),
+                    rows_inserted=rows_inserted,
+                    rows_skipped=0
+                )
+                
+                print(f"Successfully processed month {data_month.strftime('%Y-%m')}: {rows_inserted} rows")
+                
+                return {
+                    'success': True,
+                    'load_id': load_id,
+                    'rows_inserted': rows_inserted,
+                    'data_month': data_month,
+                    'files_processed': 1
+                }
+                
+            except Exception as e:
+                error_msg = str(e)
+                print(f"Error processing month: {error_msg}")
+                
+                self.update_load_record(
+                    load_id, 'FAILED',
+                    rows_read=len(merged_df) if 'merged_df' in locals() else 0,
+                    error_message=error_msg[:500],
+                    error_details=str(e)
+                )
+                
+                return {
+                    'success': False,
+                    'load_id': load_id,
+                    'error': error_msg
+                }
+        
+        # Fallback: Load original resultados files and merge (legacy behavior)
         if not files['resultados']:
             return {
                 'success': False,
-                'error': f'No resultados_analisis_completo files found for month {data_month.strftime("%Y-%m")}'
+                'error': f'No resultados files found for month {data_month.strftime("%Y-%m")}'
             }
         
         # Load first resultados file

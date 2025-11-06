@@ -8,13 +8,19 @@ from pathlib import Path
 
 def infer_mysql_type(series: pd.Series, col_name: str) -> str:
     """Infer MySQL data type from pandas Series"""
-    # Check for datetime
-    if 'fecha' in col_name.lower() or 'date' in col_name.lower() or 'timestamp' in col_name.lower():
-        # Try to parse as datetime
+    col_lower = col_name.lower()
+    
+    # Flags: force TINYINT(1) regardless of substrings like 'fecha' in the name
+    if 'flg' in col_lower or 'flag' in col_lower:
+        return 'TINYINT(1)'
+    
+    # Datetime-like columns
+    if 'fecha' in col_lower or 'date' in col_lower or 'timestamp' in col_lower:
         try:
             pd.to_datetime(series.dropna().iloc[0] if len(series.dropna()) > 0 else None, errors='raise')
             return 'DATETIME'
-        except:
+        except Exception:
+            # fall through to regular inference if parsing fails
             pass
     
     # Check dtype
@@ -39,12 +45,10 @@ def infer_mysql_type(series: pd.Series, col_name: str) -> str:
     if pd.api.types.is_float_dtype(dtype):
         return 'DECIMAL(15,2)'
     
-    # Boolean flags
-    if 'flg' in col_name.lower() or 'flag' in col_name.lower():
-        # Check if it's 0/1 or boolean
-        unique_vals = series.dropna().unique()
-        if len(unique_vals) <= 2 and all(v in [0, 1, '0', '1', True, False] for v in unique_vals):
-            return 'TINYINT(1)'
+    # Simple boolean detection (non-flag columns)
+    unique_vals = series.dropna().unique()[:10]
+    if len(unique_vals) > 0 and all(v in [0, 1, '0', '1', True, False] for v in unique_vals):
+        return 'TINYINT(1)'
     
     # String types
     if pd.api.types.is_object_dtype(dtype) or pd.api.types.is_string_dtype(dtype):

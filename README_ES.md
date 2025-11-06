@@ -154,6 +154,54 @@ SET GLOBAL net_write_timeout = 600;
 
 ## Uso
 
+### Cuatro tablas desde fending_data (1 tabla por CSV)
+
+Este proyecto crea exactamente 4 tablas en la base de datos, una por cada CSV en `fending_data`, con nombres de tabla iguales al nombre del archivo (sin `.csv`):
+
+- resultados_analisis_completo_metadata_final_nps
+- flags_resumen_total_con_pagos_atc
+- flags_resumen_total_con_pagos_galicia
+- flags_resumen_total_con_morosidad
+
+Pasos para crearlas y cargar datos:
+
+```bash
+# 1) Generar archivos SQL (CREATE TABLE) a partir de los CSVs
+python tools/generate_sql_from_csvs.py
+
+# 2) Aplicar todos los SQLs a la base (crea las 4 tablas)
+python database/init_database.py           # local
+python database/init_database.py --cloud   # nube
+
+# 3) Cargar datos en esas 4 tablas
+python create_tables_from_csvs.py --path "fending_data"
+python create_tables_from_csvs.py --path "fending_data" --cloud
+
+# 4) Verificar
+# En MySQL:
+#   SHOW TABLES;
+#   SELECT COUNT(*) FROM resultados_analisis_completo_metadata_final_nps;
+```
+
+### Crear 4 tablas con el mismo nombre que los archivos CSV (importación única)
+
+Si necesitas crear una tabla por CSV con el nombre de la tabla igual al nombre del archivo CSV (sin la extensión .csv, preservando espacios y paréntesis), usa el script auxiliar:
+
+```bash
+# Base de datos local
+python create_tables_from_csvs.py --path "fending_data"
+
+# Base de datos en la nube
+python create_tables_from_csvs.py --path "fending_data" --cloud
+
+# Ajustes opcionales
+python create_tables_from_csvs.py --path "fending_data" --sample 1000 --chunksize 5000
+```
+
+Notas:
+- El script infiere tipos de MySQL por columna a partir de una muestra del CSV y crea tablas con identificadores entre comillas para permitir espacios/paréntesis en los nombres.
+- Luego carga los datos completos de cada CSV en lotes dentro de la tabla creada correspondiente.
+
 ### Procesar un Archivo CSV Individual
 
 ```bash

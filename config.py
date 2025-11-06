@@ -52,6 +52,10 @@ class ETLConfig:
     # Supported CSV file patterns
     CSV_PATTERNS = {
         'resultados_analisis_completo': 'resultados_analisis_completo*.csv',
+        'resultados_analisis_completo_metadata_final_nps': 'resultados_analisis_completo_metadata_final_nps*.csv',
+        'flags_resumen_total_con_pagos_atc': 'flags_resumen_total_con_pagos_atc*.csv',
+        'flags_resumen_total_con_pagos_galicia': 'flags_resumen_total_con_pagos_galicia*.csv',
+        'flags_resumen_total_con_morosidad': 'flags_resumen_total_con_morosidad*.csv',
         'metadata': 'metadata*.csv',
         'speech_analytics': 'speech_analytics*.csv'
     }
