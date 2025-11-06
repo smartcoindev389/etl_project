@@ -73,6 +73,29 @@ def generate_create_table_sql(df: pd.DataFrame, table_name: str, col_map: dict) 
 	return "\n".join(schema_lines)
 
 
+def _ensure_global_report_table(conn):
+	"""Create a single global report table `upload_reports` if it doesn't exist."""
+	report_table = "upload_reports"
+	create_sql = f"""
+	CREATE TABLE IF NOT EXISTS `{report_table}` (
+	  `report_id` BIGINT AUTO_INCREMENT PRIMARY KEY,
+	  `table_name` VARCHAR(255) NOT NULL,
+	  `source_file` VARCHAR(1000) NOT NULL,
+	  `file_size_bytes` BIGINT,
+	  `rows_read` BIGINT DEFAULT 0,
+	  `chunksize` INT,
+	  `sample_rows` INT,
+	  `status` VARCHAR(50) DEFAULT 'COMPLETED',
+	  `error_message` TEXT,
+	  `started_ts` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	  `completed_ts` TIMESTAMP NULL,
+	  `duration_seconds` DECIMAL(12,2)
+	) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+	"""
+	conn.execute(text(create_sql))
+	return report_table
+
+
 def create_table_from_csv(engine, csv_path: Path, sample_rows: int = 1000, chunksize: int = 5000):
 	"""Create a table matching the CSV and load its data in chunks."""
 	print(f"\nProcessing: {csv_path}")
@@ -92,6 +115,13 @@ def create_table_from_csv(engine, csv_path: Path, sample_rows: int = 1000, chunk
 		print("  Recreating table to match current CSV structure...")
 		conn.execute(text(f"DROP TABLE IF EXISTS `{table_name}`"))
 		conn.execute(text(create_sql))
+		# Ensure global report table exists
+		report_table = _ensure_global_report_table(conn)
+
+	# Prepare report metrics
+	file_size = csv_path.stat().st_size
+	from time import perf_counter
+	start = perf_counter()
 
 	# Load full CSV in chunks
 	print("  Loading full data in chunks...")
@@ -107,6 +137,29 @@ def create_table_from_csv(engine, csv_path: Path, sample_rows: int = 1000, chunk
 		total += inserted
 		print(f"    +{inserted} rows (total {total})")
 	print(f"  Done: {total} rows inserted into `{table_name}`")
+
+	# Write upload report
+	duration = perf_counter() - start
+	with engine.begin() as conn:
+		report_table = "upload_reports"
+		conn.execute(
+			text(
+				f"""
+				INSERT INTO `{report_table}`
+				(table_name, source_file, file_size_bytes, rows_read, chunksize, sample_rows, status, completed_ts, duration_seconds)
+				VALUES (:table_name, :source_file, :file_size_bytes, :rows_read, :chunksize, :sample_rows, 'COMPLETED', CURRENT_TIMESTAMP, :duration)
+				"""
+			),
+			{
+				"table_name": table_name,
+				"source_file": str(csv_path),
+				"file_size_bytes": int(file_size),
+				"rows_read": int(total),
+				"chunksize": int(chunksize),
+				"sample_rows": int(sample_rows),
+				"duration": float(round(duration, 2)),
+			},
+		)
 
 
 def main():
