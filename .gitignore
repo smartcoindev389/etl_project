@@ -46,6 +46,8 @@ env/
 logs/
 
 # Data files (client data)
+data/
+*.csv
 *.xlsx
 bulk_load_report.txt
 
