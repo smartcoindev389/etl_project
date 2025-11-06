@@ -46,9 +46,6 @@ env/
 logs/
 
 # Data files (client data)
-# /fending data/
-data/
-*.csv
 *.xlsx
 bulk_load_report.txt
 
