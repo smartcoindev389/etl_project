@@ -58,7 +58,10 @@ def infer_mysql_type(series: pd.Series, col_name: str) -> str:
                 return 'BIGINT'
             elif max_val <= 127 and min_val >= -128:
                 return 'TINYINT'
-            elif max_val <= 32767 and min_val >= -32768:
+            # Use safety margin: if max > 20,000, use INT instead of SMALLINT
+            # This prevents "out of range" errors when sample doesn't contain max value
+            # SMALLINT max is 32,767, so 20,000 gives us ~60% safety margin
+            elif max_val <= 20000 and min_val >= -20000:
                 return 'SMALLINT'
             elif max_val <= 2147483647 and min_val >= -2147483648:
                 return 'INT'
