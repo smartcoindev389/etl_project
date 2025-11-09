@@ -33,15 +33,20 @@ class ETLMonthlyProcessor:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
     
+    def calculate_path_hash(self, file_path: Path) -> str:
+        """Calculate SHA256 hash of file path for uniqueness"""
+        return hashlib.sha256(str(file_path).encode('utf-8')).hexdigest()
+    
     def is_file_processed(self, file_path: Path) -> Optional[Dict]:
         """
         Check if file has already been processed
         Returns: Dict with file info if processed, None otherwise
         """
+        path_hash = self.calculate_path_hash(file_path)
         with self.engine.connect() as conn:
             result = conn.execute(
-                text("SELECT * FROM processed_files WHERE file_path = :path"),
-                {"path": str(file_path)}
+                text("SELECT * FROM processed_files WHERE file_path_hash = :path_hash"),
+                {"path_hash": path_hash}
             ).fetchone()
             
             if result:
@@ -52,18 +57,20 @@ class ETLMonthlyProcessor:
                                  source_type: str, data_month: date,
                                  file_size: int):
         """Register or update file processing record"""
+        path_hash = self.calculate_path_hash(file_path)
         with self.engine.connect() as conn:
             conn.execute(
                 text("""
                     INSERT INTO processed_files 
-                    (file_path, file_name, file_hash, file_size_bytes, source_type, data_month)
-                    VALUES (:path, :name, :hash, :size, :type, :month)
+                    (file_path, file_path_hash, file_name, file_hash, file_size_bytes, source_type, data_month)
+                    VALUES (:path, :path_hash, :name, :hash, :size, :type, :month)
                     ON DUPLICATE KEY UPDATE
                         last_processed_ts = CURRENT_TIMESTAMP,
                         process_count = process_count + 1
                 """),
                 {
                     "path": str(file_path),
+                    "path_hash": path_hash,
                     "name": file_path.name,
                     "hash": file_hash,
                     "size": file_size,
@@ -82,9 +89,8 @@ class ETLMonthlyProcessor:
                 text("""
                     INSERT INTO audit_loads 
                     (source_file, source_type, file_path, file_size_bytes, 
-                     data_month, data_year, data_month_num, status)
-                    VALUES (:file, :type, :path, :size, :month, 
-                            YEAR(:month), MONTH(:month), 'RUNNING')
+                     data_month, status)
+                    VALUES (:file, :type, :path, :size, :month, 'RUNNING')
                 """),
                 {
                     "file": source_file,
@@ -116,7 +122,6 @@ class ETLMonthlyProcessor:
                         rows_inserted = :inserted,
                         rows_skipped = :skipped,
                         end_ts = CURRENT_TIMESTAMP,
-                        processing_duration_seconds = TIMESTAMPDIFF(SECOND, start_ts, CURRENT_TIMESTAMP),
                         error_message = :error_msg,
                         error_details = :error_details
                     WHERE load_id = :load_id
@@ -288,14 +293,106 @@ class ETLMonthlyProcessor:
         
         return df_transformed
     
+    def _infer_mysql_type(self, series: pd.Series, col_name: str) -> str:
+        """Infer MySQL data type from pandas Series"""
+        # Check for flags (boolean-like)
+        if 'flg' in col_name.lower() or 'flag' in col_name.lower():
+            return 'TINYINT'
+        
+        # Check data type
+        if series.dtype == 'bool' or series.dtype == 'boolean':
+            return 'TINYINT'
+        elif series.dtype in ['int64', 'int32', 'Int64', 'Int32']:
+            return 'BIGINT'
+        elif series.dtype in ['float64', 'float32', 'Float64', 'Float32']:
+            return 'DECIMAL(18, 4)'
+        elif 'datetime' in str(series.dtype).lower() or 'timestamp' in str(series.dtype).lower():
+            return 'DATETIME'
+        else:
+            # String type - check max length
+            max_len = series.astype(str).str.len().max()
+            if pd.isna(max_len) or max_len <= 255:
+                return 'VARCHAR(255)'
+            elif max_len <= 500:
+                return 'VARCHAR(500)'
+            elif max_len <= 1000:
+                return 'VARCHAR(1000)'
+            else:
+                return 'TEXT'
+    
+    def _clean_column_name(self, col_name: str) -> str:
+        """Clean column name for MySQL compatibility"""
+        safe_col = col_name.replace(' ', '_').replace('-', '_').replace('(', '').replace(')', '')
+        safe_col = safe_col.replace('[', '').replace(']', '').replace('.', '_')
+        safe_col = safe_col.replace('{', '').replace('}', '').replace('/', '_')
+        safe_col = safe_col.replace('\\', '_').replace(':', '_').replace(';', '_')
+        safe_col = safe_col.replace(',', '_').replace('?', '_').replace('!', '_')
+        # Remove multiple consecutive underscores
+        while '__' in safe_col:
+            safe_col = safe_col.replace('__', '_')
+        # Remove leading/trailing underscores
+        safe_col = safe_col.strip('_')
+        return safe_col
+    
+    def _ensure_columns_exist(self, df: pd.DataFrame, conn):
+        """Ensure all CSV columns exist in fact_records table, add them if missing"""
+        # Get existing columns
+        result = conn.execute(text("""
+            SELECT COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = DATABASE() 
+            AND TABLE_NAME = 'fact_records'
+        """))
+        existing_columns = {row[0] for row in result}
+        
+        # Metadata columns that should not be added
+        metadata_cols = {'record_id', 'source_file', 'data_month', 'data_year', 
+                        'data_month_num', 'load_id', 'load_ts'}
+        
+        # Find columns that need to be added
+        columns_to_add = []
+        for col in df.columns:
+            # Clean column name for MySQL
+            safe_col = self._clean_column_name(col)
+            
+            # Skip if already exists or is metadata
+            if safe_col in existing_columns or safe_col in metadata_cols:
+                continue
+            
+            # Infer MySQL type
+            mysql_type = self._infer_mysql_type(df[col], col)
+            
+            # Check if nullable
+            null_count = df[col].isna().sum()
+            nullable = "NULL" if null_count > 0 else "NULL"  # Allow NULL for flexibility
+            
+            columns_to_add.append((col, safe_col, mysql_type, nullable))
+        
+        # Add missing columns
+        if columns_to_add:
+            print(f"  Adding {len(columns_to_add)} new columns to fact_records table...")
+            for orig_col, safe_col, mysql_type, nullable in columns_to_add:
+                try:
+                    alter_sql = f"ALTER TABLE `fact_records` ADD COLUMN `{safe_col}` {mysql_type} {nullable}"
+                    conn.execute(text(alter_sql))
+                    print(f"    Added column: {safe_col} ({mysql_type}) from '{orig_col}'")
+                except Exception as e:
+                    # Column might already exist or other error
+                    if 'Duplicate column name' not in str(e):
+                        print(f"    Warning: Could not add column {safe_col}: {e}")
+            conn.commit()
+    
     def load_data_to_db(self, df: pd.DataFrame, load_id: int, 
                         source_file: str, data_month: date):
         """Load transformed data to database"""
         if df.empty:
             return 0
         
-        # Get list of columns that exist in the database and their requirements
+        # Ensure all columns exist in the database
         with self.engine.connect() as conn:
+            self._ensure_columns_exist(df, conn)
+            
+            # Get list of columns that exist in the database and their requirements
             result = conn.execute(text("""
                 SELECT COLUMN_NAME, IS_NULLABLE, DATA_TYPE, COLUMN_TYPE
                 FROM INFORMATION_SCHEMA.COLUMNS 
@@ -307,10 +404,21 @@ class ETLMonthlyProcessor:
                              for row in result}
             db_columns = list(db_column_info.keys())
         
-        # Filter dataframe to only include columns that exist in database
-        # Keep metadata columns we'll add
+        # Map CSV columns to database columns (handle name differences)
         metadata_cols = ['source_file', 'data_month', 'load_id']
-        available_cols = [col for col in df.columns if col in db_columns]
+        available_cols = []
+        col_mapping = {}
+        
+        for col in df.columns:
+            # Clean column name for MySQL
+            safe_col = self._clean_column_name(col)
+            
+            if safe_col in db_columns:
+                available_cols.append(col)
+                col_mapping[col] = safe_col
+            elif col in db_columns:
+                available_cols.append(col)
+                col_mapping[col] = col
         
         if not available_cols:
             print(f"Warning: No matching columns found between CSV and database")
@@ -320,6 +428,10 @@ class ETLMonthlyProcessor:
         
         # Create filtered dataframe with only matching columns
         df_filtered = df[available_cols].copy()
+        
+        # Rename columns to match database column names
+        if col_mapping:
+            df_filtered = df_filtered.rename(columns=col_mapping)
         
         # Add metadata columns
         df_filtered['source_file'] = source_file

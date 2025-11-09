@@ -1,6 +1,8 @@
 """
 Bulk Historical Data Loader
 Loads all historical CSV files into the database
+Creates a separate table for each CSV file (like Method 1)
+Uses upload_reports table for tracking
 """
 import sys
 from pathlib import Path
@@ -8,15 +10,15 @@ from datetime import datetime, date
 from typing import List, Dict
 from collections import defaultdict
 
-from etl_monthly_processor import ETLMonthlyProcessor
+from etl_table_per_file_processor import ETLTablePerFileProcessor
 from config import ETLConfig
 
 class BulkHistoricalLoader:
-    """Bulk loader for historical data"""
+    """Bulk loader for historical data - creates separate table per file"""
     
     def __init__(self, use_cloud=False):
         """Initialize bulk loader"""
-        self.processor = ETLMonthlyProcessor(use_cloud=use_cloud)
+        self.processor = ETLTablePerFileProcessor(use_cloud=use_cloud)
         self.config = ETLConfig()
     
     def discover_csv_files(self, base_path: Path, recursive: bool = True) -> Dict[str, Dict[str, List[Path]]]:
@@ -198,7 +200,9 @@ class BulkHistoricalLoader:
                     result = self.processor.process_single_file(
                         csv_file,
                         data_month=month_date,
-                        skip_duplicates=skip_duplicates
+                        skip_duplicates=skip_duplicates,
+                        sample_rows=1000,
+                        chunksize=5000
                     )
                     
                     month_results['results'].append(result)
@@ -213,7 +217,8 @@ class BulkHistoricalLoader:
                             month_results['successful'] += 1
                             results['successful_files'] += 1
                             rows = result.get('rows_inserted', 0)
-                            print(f"      Status: Success ({rows} rows loaded)")
+                            table_name = result.get('table_name', 'unknown')
+                            print(f"      Status: Success ({rows} rows loaded into `{table_name}`)")
                     else:
                         month_results['failed'] += 1
                         results['failed_files'] += 1
