@@ -41,44 +41,14 @@ class ETLTablePerFileProcessor:
     def is_file_processed(self, file_path: Path) -> Optional[Dict]:
         """
         Check if file has already been processed
-        Returns: Dict with file info if processed, None otherwise
+        Returns: None (files are not tracked)
         """
-        path_hash = self.calculate_path_hash(file_path)
-        with self.engine.connect() as conn:
-            result = conn.execute(
-                text("SELECT * FROM processed_files WHERE file_path_hash = :path_hash"),
-                {"path_hash": path_hash}
-            ).fetchone()
-            
-            if result:
-                return dict(result._mapping)
         return None
     
     def register_file_processing(self, file_path: Path, file_hash: str, 
                                  source_type: str, data_month, file_size: int):
-        """Register or update file processing record"""
-        path_hash = self.calculate_path_hash(file_path)
-        with self.engine.connect() as conn:
-            conn.execute(
-                text("""
-                    INSERT INTO processed_files 
-                    (file_path, file_path_hash, file_name, file_hash, file_size_bytes, source_type, data_month)
-                    VALUES (:path, :path_hash, :name, :hash, :size, :type, :month)
-                    ON DUPLICATE KEY UPDATE
-                        last_processed_ts = CURRENT_TIMESTAMP,
-                        process_count = process_count + 1
-                """),
-                {
-                    "path": str(file_path),
-                    "path_hash": path_hash,
-                    "name": file_path.name,
-                    "hash": file_hash,
-                    "size": file_size,
-                    "type": source_type,
-                    "month": data_month
-                }
-            )
-            conn.commit()
+        """Register or update file processing record (no-op, files are not tracked)"""
+        pass
     
     def calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA256 hash of file content"""

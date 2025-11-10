@@ -31,7 +31,6 @@ ENV/
 env/
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo
@@ -59,3 +58,6 @@ Thumbs.db
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 /fending_data
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
